@@ -1,6 +1,3 @@
-;; This buffer is for text that is not saved, and for Lisp evaluation.
-;; To create a file, visit it with ‘C-x C-f’ and enter text in its buffer.
-
 # Day 1: The Rust Mental Model & Syntax Basics
 
 Welcome to Day 1! Coming from Python, your biggest hurdle today won't be syntax—it will be adjusting to **how** Rust thinks about data, memory, and code safety.
