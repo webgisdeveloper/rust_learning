@@ -1,4 +1,6 @@
 use std::io::{self, Write}; // Import standard input/output library
+// use std::io;        This is what 'self' brings in
+// use std::io::Write; This brings in the Write trait
 
 fn main() {
     println!("--- Welcome to the Day 1 Actix-Preparatory CLI Tool ---");
@@ -11,6 +13,8 @@ fn main() {
 	// 2. Read lines from the terminal into our mutable string
 	print!("admin@rust-api> ");
 	io::stdout().flush().unwrap(); // Force the prompt to print immediately
+	// .unwrap() is a quick way to extract the success value from a wrapper type like ⁠Option or Result.
+	// It tells the compiler: "Give me the value inside, and if something went wrong, just crash the program right
 
 	io::stdin()
 	    .read_line(&mut input)
@@ -20,6 +24,8 @@ fn main() {
 	let command = input.trim().to_lowercase();
 
 	// 4. Use pattern matching to route the command
+	// as_str(): rust cannot natively match a String (heap-allocated object) against a &str (a compiled literal link)
+	// "start" is string literals, &str 
 	match command.as_str() {
 	    "start" => {
 		println!("🚀 Starting mock Actix Web server instance...");
