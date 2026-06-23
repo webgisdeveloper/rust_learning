@@ -164,3 +164,39 @@ To fix the application so it compiles and prints successfully:
 1. Do I know whether my function is taking **ownership** of a variable or just **borrowing** it?
 2. If my Actix web server has 4 worker threads trying to read a configuration string, why does Rust require them to use immutable references (`&`)?
 3. What is the fundamental difference between Python assigning a dictionary to a new variable name vs. Rust moving a struct?
+
+## More on fix
+In your code, uncommenting r3 fails because r1 and r2 are still active when r3 tries to borrow the data.
+To fix this, you must end the scope of the immutable references before creating the mutable one.
+Rust references are only active from where they are created until their last actual use in the code (known as Non-Lexical Lifetimes).
+You can fix this code in two different ways:
+### Option 1: Move the Print Statement (Recommended)
+Move your println! above the mutable borrow. Once the print statement finishes, r1 and r2 are no longer needed, so their lifetime ends.
+```rust
+fn main() {
+    let mut data = String::from("Database Connection");
+
+    let r1 = &data; 
+    let r2 = &data; 
+    println!("{}, {}", r1, r2); // Last use of r1 and r2. Their borrows end here.
+    
+    let r3 = &mut data; //  WORKS: No other borrows are active.
+    r3.push_str(" Active");
+}
+```
+### Option 2: Use Explicit Braces
+You can isolate r1 and r2 inside a smaller block using curly braces {}. When the block ends, the immutable borrows are automatically dropped.
+```rust
+fn main() {
+    let mut data = String::from("Database Connection");
+
+    {
+        let r1 = &data; 
+        let r2 = &data; 
+        println!("{}, {}", r1, r2);
+    } // r1 and r2 go out of scope here.
+
+    let r3 = &mut data; //  WORKS: The data is completely free to be borrowed.
+    r3.push_str(" Active");
+}
+```

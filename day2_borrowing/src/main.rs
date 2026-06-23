@@ -1,4 +1,6 @@
 // Fixing the Borrow Checker
+// Borrowing in Rust allows you to use or modify data temporarily without taking ownership of it, preventing data races and pointer errors.
+// The Sharing vs. Mutation Rule: You can have any number of immutable references (&T) OR exactly one mutable reference (&mut T), but never both at the same time.
 
 struct AppConfig {
     server_name: String,
