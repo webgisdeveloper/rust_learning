@@ -17,6 +17,8 @@ struct ApiRequest {
     auth_token: Option<String>,
 }
 
+// Automatically implements the Debug trait so this type can be printed
+// with {:?} (or {:#?}) for debugging/logging.
 #[derive(Debug)]
 enum ApiError{
     MissingBody,
@@ -76,4 +78,5 @@ fn handle_request(req: ApiRequest) -> Result<AuthenticatedUser, ApiError> {
 	Err(ApiError::InvalidToken)
     }
 }
+
 
