@@ -24,6 +24,8 @@ fn print_config (cfg: &AppConfig) {
 }
 
 fn update_port (cfg: &mut AppConfig,new_port: u32) {
+    // let = create new binding
+    // = = assign/update existing variable/field
     cfg.port = new_port;
-    println!("Update port to {}", new_port);
+    println!("Update port to {}", cfg.port);
 }
