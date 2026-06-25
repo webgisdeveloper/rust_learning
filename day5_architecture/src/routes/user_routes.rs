@@ -2,9 +2,10 @@
 use crate::models::UserProfile;
 
 pub fn mock_create_user_handleer() {
-    let new_user = UserProfile {
-	username: String::from("John M"),
-	role: String::from("Admin"),
-    };
+    let new_user = UserProfile::new(
+        String::from("John M"),
+        String::from("Admin"),
+        95_000.0,
+    );
     println!("📡 [Actix Mock Route] Successfully processed payload for: {:?}", new_user);
 }
