@@ -2,10 +2,11 @@
 name = "day6_actix_basics"
 version = "0.1.0"
 edition = "2024"
+default-run = "day6_actix_basics"
 
 [dependencies]
 actix-web = "4"
 num_cpus = "1"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 futures = "0.3"
