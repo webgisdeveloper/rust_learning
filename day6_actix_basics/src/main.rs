@@ -17,6 +17,9 @@ async fn health_check() -> impl Responder {
 async fn main() -> std::io::Result<()> {
     println!("🚀 Launching Actix Web server on http://127.0.0.1:8080");
 
+    let workers = num_cpus::get();
+    println!("Starting server with {} workers", workers);
+
     // Instantiated the multi-threaded server
     HttpServer::new(|| {
 	// This closure runs for every thread/cpu worker core Actix creats
@@ -24,6 +27,7 @@ async fn main() -> std::io::Result<()> {
 	    .service(hello_world)  // Register / route
 	    .service(health_check) // Register /helath route
     })
+	.workers(workers) // Report number of worker
 	.bind(("127.0.0.1", 8080))? // Bind to local host on port 8080 
 	.run() // Run the execution engine loop
 	.await // Wait asynchronously for shutdown signals

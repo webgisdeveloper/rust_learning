@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 actix-web = "4"
-
+num_cpus = "1"
