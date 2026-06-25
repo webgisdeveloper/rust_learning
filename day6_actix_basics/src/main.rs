@@ -27,7 +27,7 @@ async fn main() -> std::io::Result<()> {
 	    .service(hello_world)  // Register / route
 	    .service(health_check) // Register /helath route
     })
-	.workers(workers) // Report number of worker
+	.workers(workers) // Sets how many worker threads Actix Web should start
 	.bind(("127.0.0.1", 8080))? // Bind to local host on port 8080 
 	.run() // Run the execution engine loop
 	.await // Wait asynchronously for shutdown signals
