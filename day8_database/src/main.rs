@@ -30,6 +30,9 @@ async fn list_books(data: web::Data<AppState>) -> impl Responder {
     let books = data.mock_db.lock().await;
 
     println!("📡 [{}] Fetching all books from mock DB pool...", data.app_name);
+    // `books` is `MutexGuard<Vec<Book>>`, not `Vec<Book>`.
+    // `&books` would be `&MutexGuard<Vec<Book>>` (wrong type for JSON body).
+    // `&*books` dereferences the guard to `Vec<Book>`, then borrows it as `&Vec<Book>`.
     HttpResponse::Ok().json(&*books)
 }
 
