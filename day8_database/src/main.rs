@@ -39,6 +39,17 @@ async fn list_books(data: web::Data<AppState>) -> impl Responder {
 async fn create_book(data: web::Data<AppState>, payload: web::Json<NewBoookRequest>, ) -> impl Responder {
     let mut books = data.mock_db.lock().await;
     let new_id = books.len() + 1;
+
+    // Why clone here instead of using payload.title directly?
+    // `payload` is `web::Json<NewBoookRequest>`, and `title`/`author` are owned `String`s.
+    // Writing `payload.title` would try to move the `String` out of `payload`,
+    // which is not allowed in this context because `String` is not `Copy`.
+    // `clone()` creates a new owned `String` for `new_book` and keeps `payload` intact.
+    //
+    // Alternative (no clone):
+    // let payload = payload.into_inner();
+    // title: payload.title,
+    // author: payload.author,
     let new_book = Book {
 	id: new_id,
 	title: payload.title.clone(),
@@ -72,4 +83,3 @@ async fn main() -> std::io::Result<()> {
 	.run()
 	.await
 }
-
