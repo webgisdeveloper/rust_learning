@@ -24,6 +24,9 @@ async fn main() -> std::io::Result<()>{
 // This one is only compiled when running tests because of `#[cfg(test)]` above.
 // It groups test-only imports and test functions together, keeping production code clean.
 mod tests {
+    // `super` refers to the parent module (the outer scope of this `tests` module).
+    // `*` imports all accessible items from that parent, so tests can call `health_check`
+    // directly without a full path.
     use super::*;
     use actix_web::{test, App};
 
