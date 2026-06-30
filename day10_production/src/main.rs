@@ -19,6 +19,10 @@ async fn main() -> std::io::Result<()>{
 
 // Testing suite
 #[cfg(test)]
+// `mod tests` declares a Rust module named `tests`.
+// A module is a namespace/container used to organize code.
+// This one is only compiled when running tests because of `#[cfg(test)]` above.
+// It groups test-only imports and test functions together, keeping production code clean.
 mod tests {
     use super::*;
     use actix_web::{test, App};
