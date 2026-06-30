@@ -1,0 +1,11 @@
+[package]
+name = "day10_production"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actix-web = "4"
+serde = { version = "1.0", features = ["derive"] }
+# Force a specific working version of the time crate
+# fix: error: could not compile `cookie` (lib) due to 1 previous error
+time = "=0.3.35"
