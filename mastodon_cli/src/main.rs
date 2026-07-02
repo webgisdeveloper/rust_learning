@@ -51,10 +51,36 @@ struct StatusRequest {
 }
 
 // Central place for shortcode mappings; easy to expand later.
-const SHORTCODE_MAPPINGS: &[(&str, &str)] = &[(":apple:", "🍎")];
+const SHORTCODE_MAPPINGS: &[(&str, &str)] = &[
+    (":apple:", "🍎"),
+    (":grinning:", "😀"),
+    (":smile:", "😄"),
+    (":joy:", "😂"),
+    (":wink:", "😉"),
+    (":heart_eyes:", "😍"),
+    (":thinking:", "🤔"),
+    (":sob:", "😭"),
+    (":angry:", "😠"),
+    (":thumbsup:", "👍"),
+    (":thumbsdown:", "👎"),
+    (":clap:", "👏"),
+    (":pray:", "🙏"),
+    (":muscle:", "💪"),
+    (":fire:", "🔥"),
+    (":star:", "⭐"),
+    (":sparkles:", "✨"),
+    (":heart:", "❤️"),
+    (":broken_heart:", "💔"),
+    (":tada:", "🎉"),
+    (":100:", "💯"),
+    (":rocket:", "🚀"),
+    (":check_mark:", "✅"),
+    (":warning:", "⚠️"),
+    (":eyes:", "👀"),
+];
 
 /// Converts known Mastodon shortcodes into real emoji characters.
-/// For now we only replace `:apple:` because that is the requested behavior.
+/// Unknown shortcodes remain unchanged.
 fn replace_emoji_shortcodes(message: &str) -> String {
     // Start from the original message and apply each replacement one by one.
     let mut converted = message.to_string();
@@ -129,5 +155,11 @@ mod tests {
     fn keeps_message_unchanged_when_shortcode_is_absent() {
         let result = replace_emoji_shortcodes("No shortcode here");
         assert_eq!(result, "No shortcode here");
+    }
+
+    #[test]
+    fn replaces_multiple_common_shortcodes() {
+        let result = replace_emoji_shortcodes("Launch :rocket: and celebrate :tada:");
+        assert_eq!(result, "Launch 🚀 and celebrate 🎉");
     }
 }
