@@ -27,45 +27,61 @@ use serde::Serialize;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use regex::Regex;
 
-/// Replaces :shortcodes: with actual emoji characters.
+// Central place for shortcode mappings. Using a slice of tuples for clean separation.
+const SHORTCODE_MAPPINGS: &[(&str, &str)] = &[
+    ("apple", "🍎"),
+    ("banana", "🍌"),
+    ("cherry", "🍒"),
+    ("strawberry", "🍓"),
+    ("grape", "🍇"),
+    ("pizza", "🍕"),
+    ("hamburger", "🍔"),
+    ("beer", "🍺"),
+    ("coffee", "☕"),
+    ("smile", "😄"),
+    ("joy", "😂"),
+    ("sob", "😭"),
+    ("angry", "😡"),
+    ("heart", "❤️"),
+    ("fire", "🔥"),
+    ("thumbsup", "👍"),
+    ("thumbsdown", "👎"),
+    ("star", "⭐"),
+    ("rocket", "🚀"),
+    ("party_popper", "🎉"),
+    ("tada", "🎉"),
+    ("sun", "☀️"),
+    ("moon", "🌙"),
+    ("dog", "🐶"),
+    ("cat", "🐱"),
+    ("leaf", "🍃"),
+    ("cloud", "☁️"),
+    ("grinning", "😀"),
+    ("wink", "😉"),
+    ("heart_eyes", "😍"),
+    ("thinking", "🤔"),
+    ("clap", "👏"),
+    ("pray", "🙏"),
+    ("muscle", "💪"),
+    ("sparkles", "✨"),
+    ("broken_heart", "💔"),
+    ("100", "💯"),
+    ("check_mark", "✅"),
+    ("warning", "⚠️"),
+    ("eyes", "👀"),
+];
+
+/// Replaces :shortcodes: with actual emoji characters using a single-pass regex.
 fn replace_emojis(text: &str) -> String {
-    // Regex to find patterns like :apple: or :smile:
     let re = Regex::new(r":([a-z0-9_]+):").unwrap();
     
-    // replace_all takes a closure that receives the matched text (Caps).
-    // We extract the word inside the colons and look it up in our mapping.
     re.replace_all(text, |caps: &regex::Captures| {
         let shortcode = &caps[1];
-        match shortcode {
-            "apple" => "🍎".to_string(),
-            "banana" => "🍌".to_string(),
-            "cherry" => "🍒".to_string(),
-            "strawberry" => "🍓".to_string(),
-            "grape" => "🍇".to_string(),
-            "pizza" => "🍕".to_string(),
-            "hamburger" => "🍔".to_string(),
-            "beer" => "🍺".to_string(),
-            "coffee" => "☕".to_string(),
-            "smile" => "😄".to_string(),
-            "joy" => "😂".to_string(),
-            "sob" => "😭".to_string(),
-            "angry" => "😡".to_string(),
-            "heart" => "❤️".to_string(),
-            "fire" => "🔥".to_string(),
-            "thumbsup" => "👍".to_string(),
-            "thumbsdown" => "👎".to_string(),
-            "star" => "⭐".to_string(),
-            "rocket" => "🚀".to_string(),
-            "party_popper" => "🎉".to_string(),
-            "sun" => "☀️".to_string(),
-            "moon" => "🌙".to_string(),
-            "dog" => "🐶".to_string(),
-            "cat" => "🐱".to_string(),
-            "leaf" => "🍃".to_string(),
-            "cloud" => "☁️".to_string(),
-            // If no match is found, return the original shortcode as a String.
-            _ => caps[0].to_string(),
-        }
+        // Find the emoji in our mapping; if not found, keep the original :shortcode:
+        SHORTCODE_MAPPINGS.iter()
+            .find(|(code, _)| *code == shortcode)
+            .map(|(_, emoji)| emoji.to_string())
+            .unwrap_or_else(|| caps[0].to_string())
     }).into_owned()
 }
 
@@ -142,4 +158,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Returning Ok(()) indicates the program finished successfully.
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replace_emojis;
+
+    #[test]
+    fn replaces_apple_shortcode_with_emoji() {
+        let result = replace_emojis("I am eating an :apple:");
+        assert_eq!(result, "I am eating an 🍎");
+    }
+
+    #[test]
+    fn keeps_message_unchanged_when_shortcode_is_absent() {
+        let result = replace_emojis("No shortcode here");
+        assert_eq!(result, "No shortcode here");
+    }
+
+    #[test]
+    fn replaces_multiple_common_shortcodes() {
+        let result = replace_emojis("Launch :rocket: and celebrate :tada:");
+        assert_eq!(result, "Launch 🚀 and celebrate 🎉");
+    }
 }
