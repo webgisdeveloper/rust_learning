@@ -53,8 +53,15 @@ struct StatusRequest {
 /// Converts known Mastodon shortcodes into real emoji characters.
 /// For now we only replace `:apple:` because that is the requested behavior.
 fn replace_emoji_shortcodes(message: &str) -> String {
-    // String::replace returns a new String, so the original input stays unchanged.
-    message.replace(":apple:", "🍎")
+    // Keep mappings in one place so adding new shortcodes stays beginner-friendly.
+    let shortcode_mappings = [(":apple:", "🍎")];
+
+    // Start from the original message and apply each replacement one by one.
+    let mut converted = message.to_string();
+    for (shortcode, emoji) in shortcode_mappings {
+        converted = converted.replace(shortcode, emoji);
+    }
+    converted
 }
 
 // #[tokio::main] marks the main function as an asynchronous entry point, 
