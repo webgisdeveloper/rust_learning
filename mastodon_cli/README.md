@@ -8,6 +8,7 @@ A simple Rust-based command-line interface (CLI) tool to post status updates to 
 - Handle asynchronous HTTP requests with `reqwest` and `tokio`.
 - Serialize data to JSON using `serde`.
 - Support for both command-line flags and environment variables for authentication.
+- Automatic replacement of emoji shortcodes (e.g., :apple: -> 🍎).
 
 ## Prerequisites
 
