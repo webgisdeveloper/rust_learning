@@ -41,12 +41,12 @@ export MASTODON_TOKEN=your_access_token_here
 ### Basic Usage (using environment variable)
 If `MASTODON_TOKEN` is set:
 ```bash
-cargo run -- --message "Hello from my Rust CLI!"
+cargo run -- --message "Hello from my Rust CLI! :rocket:"
 ```
 
 ### Usage with explicit token
 ```bash
-cargo run -- --message "Hello from my Rust CLI!" --token your_access_token_here
+cargo run -- --message "I am eating an :apple: :smile:" --token your_access_token_here
 ```
 
 ### Available Flags
