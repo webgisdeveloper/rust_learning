@@ -50,6 +50,13 @@ struct StatusRequest {
     status: String,
 }
 
+/// Converts known Mastodon shortcodes into real emoji characters.
+/// For now we only replace `:apple:` because that is the requested behavior.
+fn replace_emoji_shortcodes(message: &str) -> String {
+    // String::replace returns a new String, so the original input stays unchanged.
+    message.replace(":apple:", "🍎")
+}
+
 // #[tokio::main] marks the main function as an asynchronous entry point, 
 // setting up the Tokio runtime required by reqwest.
 #[tokio::main]
@@ -64,7 +71,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create the data structure we want to send as JSON.
     let body = StatusRequest {
-        status: args.message,
+        // Replace shortcodes before sending the status to Mastodon.
+        status: replace_emoji_shortcodes(&args.message),
     };
 
     // reqwest::Client is designed to be reused across requests for efficiency 
@@ -98,4 +106,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Returning Ok(()) indicates the program finished successfully.
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replace_emoji_shortcodes;
+
+    #[test]
+    fn replaces_apple_shortcode_with_emoji() {
+        let result = replace_emoji_shortcodes("I am eating an :apple:");
+        assert_eq!(result, "I am eating an 🍎");
+    }
+
+    #[test]
+    fn keeps_message_unchanged_when_shortcode_is_absent() {
+        let result = replace_emoji_shortcodes("No shortcode here");
+        assert_eq!(result, "No shortcode here");
+    }
 }
