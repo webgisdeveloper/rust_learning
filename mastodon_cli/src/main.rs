@@ -50,15 +50,15 @@ struct StatusRequest {
     status: String,
 }
 
+// Central place for shortcode mappings; easy to expand later.
+const SHORTCODE_MAPPINGS: &[(&str, &str)] = &[(":apple:", "🍎")];
+
 /// Converts known Mastodon shortcodes into real emoji characters.
 /// For now we only replace `:apple:` because that is the requested behavior.
 fn replace_emoji_shortcodes(message: &str) -> String {
-    // Keep mappings in one place so adding new shortcodes stays beginner-friendly.
-    let shortcode_mappings = [(":apple:", "🍎")];
-
     // Start from the original message and apply each replacement one by one.
     let mut converted = message.to_string();
-    for (shortcode, emoji) in shortcode_mappings {
+    for (shortcode, emoji) in SHORTCODE_MAPPINGS {
         converted = converted.replace(shortcode, emoji);
     }
     converted
