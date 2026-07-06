@@ -23,7 +23,7 @@ LIBRARIES USED:
 */
 
 use clap::Parser;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use regex::Regex;
 
@@ -94,7 +94,7 @@ struct Args {
     /// The message to post
     // #[arg(short, long)] defines both -m and --message as valid flags.
     #[arg(short, long)]
-    message: String,
+    message: Option<String>,
 
     /// The Mastodon access token
     // We make this optional so we can fall back to the environment variable.
@@ -109,6 +109,18 @@ struct StatusRequest {
     status: String,
 }
 
+/// Response model for account verification
+#[derive(Deserialize, Debug)]
+struct Account {
+    id: String,
+}
+
+/// Response model for a single status
+#[derive(Deserialize, Debug)]
+struct Status {
+    content: String,
+}
+
 // #[tokio::main] marks the main function as an asynchronous entry point, 
 // setting up the Tokio runtime required by reqwest.
 #[tokio::main]
@@ -121,39 +133,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = args.token.or_else(|| std::env::var("MASTODON_TOKEN").ok())
         .ok_or("Mastodon token not provided. Please use --token or set MASTODON_TOKEN env var.")?;
 
-    // Create the data structure we want to send as JSON.
-    // We process the message to replace shortcodes (e.g., :apple:) with real emojis.
-    let body = StatusRequest {
-        status: replace_emojis(&args.message),
-    };
-
     // reqwest::Client is designed to be reused across requests for efficiency 
     // (it manages a connection pool).
     let client = reqwest::Client::new();
+    let auth_header = format!("Bearer {}", token);
 
-    // The Mastodon API endpoint for posting a status.
-    let url = "https://mastodon.social/api/v1/statuses";
+    if let Some(msg) = args.message {
+        // CASE 1: Post a new message
+        let body = StatusRequest {
+            status: replace_emojis(&msg),
+        };
 
-    // Chain methods to build the request. 
-    // .json(&body) automatically sets the content-type to application/json 
-    // and serializes the StatusRequest struct.
-    let response = client
-        .post(url)
-        .header(AUTHORIZATION, format!("Bearer {}", token))
-        .header(CONTENT_TYPE, "application/json")
-        .json(&body)
-        .send()
-        .await?; // .await is used because sending the request is an asynchronous operation.
+        let url = "https://mastodon.social/api/v1/statuses";
+        let response = client
+            .post(url)
+            .header(AUTHORIZATION, &auth_header)
+            .header(CONTENT_TYPE, "application/json")
+            .json(&body)
+            .send()
+            .await?;
 
-    // Check if the response status code is in the 200-299 range.
-    if response.status().is_success() {
-        println!("Successfully posted message to Mastodon!");
+        if response.status().is_success() {
+            println!("Successfully posted message to Mastodon!");
+        } else {
+            let status = response.status();
+            let error_text = response.text().await?;
+            eprintln!("Error posting message: {} - {}", status, error_text);
+            std::process::exit(1);
+        }
     } else {
-        let status = response.status();
-        // We await the body text for more detailed error reporting from the API.
-        let error_text = response.text().await?;
-        eprintln!("Error posting message: {} - {}", status, error_text);
-        std::process::exit(1);
+        // CASE 2: Fetch and print recent messages
+        // 1. Get Account ID
+        let account_url = "https://mastodon.social/api/v1/accounts/verify_credentials";
+        let account_resp = client
+            .get(account_url)
+            .header(AUTHORIZATION, &auth_header)
+            .send()
+            .await?;
+
+        if !account_resp.status().is_success() {
+            let status = account_resp.status();
+            let error_text = account_resp.text().await?;
+            eprintln!("Error verifying credentials: {} - {}", status, error_text);
+            std::process::exit(1);
+        }
+
+        let account_id = account_resp.json::<Account>().await?.id;
+
+        // 2. Get recent statuses
+        let statuses_url = format!("https://mastodon.social/api/v1/accounts/{}/statuses?limit=5", account_id);
+        let statuses_resp = client
+            .get(statuses_url)
+            .header(AUTHORIZATION, &auth_header)
+            .send()
+            .await?;
+
+        if !statuses_resp.status().is_success() {
+            let status = statuses_resp.status();
+            let error_text = statuses_resp.text().await?;
+            eprintln!("Error fetching statuses: {} - {}", status, error_text);
+            std::process::exit(1);
+        }
+
+        let statuses = statuses_resp.json::<Vec<Status>>().await?;
+
+        if statuses.is_empty() {
+            println!("No recent statuses found.");
+        } else {
+            println!("Recent 5 statuses:");
+            for (i, status) in statuses.iter().enumerate() {
+                println!("{}. {}", i + 1, status.content);
+            }
+        }
     }
 
     // Returning Ok(()) indicates the program finished successfully.
