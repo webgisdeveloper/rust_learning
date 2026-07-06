@@ -95,6 +95,37 @@ fn clean_html(text: &str) -> String {
     html_escape::decode_html_entities(&stripped).into_owned()
 }
 
+/// Uploads a media file to Mastodon and returns the media ID.
+async fn upload_media(client: &reqwest::Client, token: &str, file_path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let url = "https://mastodon.social/api/v1/media";
+    
+    // Create a multipart form
+    let file_bytes = std::fs::read(file_path)
+        .map_err(|e| format!("Failed to read image file {}: {}", file_path, e))?;
+    
+    let part = reqwest::multipart::Part::bytes(file_bytes)
+        .file_name("image.jpg"); // Simplification: assuming jpg, Mastodon handles mime type
+    
+    let form = reqwest::multipart::Form::new()
+        .part("file", part);
+
+    let response = client
+        .post(url)
+        .header(AUTHORIZATION, format!("Bearer {}", token))
+        .multipart(form)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().await?;
+        return Err(format!("Media upload failed: {} - {}", status, error_text).into());
+    }
+
+    let media_resp = response.json::<MediaResponse>().await?;
+    Ok(media_resp.id)
+}
+
 /// Simple CLI tool to post a message to Mastodon
 // #[derive(Parser)] allows clap to automatically generate the CLI argument parser 
 // from this struct. It maps struct fields to command-line flags.
@@ -105,6 +136,10 @@ struct Args {
     // #[arg(short, long)] defines both -m and --message as valid flags.
     #[arg(short, long)]
     message: Option<String>,
+
+    /// Path to an image to upload
+    #[arg(short, long)]
+    image: Option<String>,
 
     /// The Mastodon access token
     // We make this optional so we can fall back to the environment variable.
@@ -117,6 +152,14 @@ struct Args {
 #[derive(Serialize)]
 struct StatusRequest {
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    media_ids: Option<Vec<String>>,
+}
+
+/// Response model for media upload
+#[derive(Deserialize, Debug)]
+struct MediaResponse {
+    id: String,
 }
 
 /// Response model for account verification
@@ -150,8 +193,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(msg) = args.message {
         // CASE 1: Post a new message
+        
+        // 1. Optional: Upload image if provided
+        let mut media_ids = None;
+        if let Some(image_path) = &args.image {
+            println!("Uploading image: {}...", image_path);
+            let media_id = upload_media(&client, &token, image_path).await?;
+            media_ids = Some(vec![media_id]);
+            println!("Image uploaded successfully.");
+        }
+
         let body = StatusRequest {
             status: replace_emojis(&msg),
+            media_ids,
         };
 
         let url = "https://mastodon.social/api/v1/statuses";

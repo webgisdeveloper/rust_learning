@@ -46,13 +46,19 @@ If `MASTODON_TOKEN` is set:
 cargo run -- --message "Hello from my Rust CLI! :rocket:"
 ```
 
+### Usage with image
+```bash
+cargo run -- --message "Check out this picture! :camera:" --image path/to/image.jpg
+```
+
 ### Usage with explicit token
 ```bash
 cargo run -- --message "I am eating an :apple: :smile:" --token your_access_token_here
 ```
 
 ### Available Flags
-- `-m, --message <TEXT>`: The status message to post (Required).
+- `-m, --message <TEXT>`: The status message to post (Optional).
+- `-i, --image <PATH>`: Path to an image to upload with the message (Optional).
 - `-t, --token <TOKEN>`: The Mastodon API access token (Optional if `MASTODON_TOKEN` is set).
 - `-h, --help`: Print help message.
 - `-V, --version`: Print version information.
