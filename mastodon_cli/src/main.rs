@@ -85,6 +85,16 @@ fn replace_emojis(text: &str) -> String {
     }).into_owned()
 }
 
+/// Strips HTML tags and decodes HTML entities.
+fn clean_html(text: &str) -> String {
+    // 1. Remove HTML tags using regex
+    let re = Regex::new(r"<[^>]*>").unwrap();
+    let stripped = re.replace_all(text, "");
+    
+    // 2. Decode HTML entities (e.g., &gt; -> >)
+    html_escape::decode_html_entities(&stripped).into_owned()
+}
+
 /// Simple CLI tool to post a message to Mastodon
 // #[derive(Parser)] allows clap to automatically generate the CLI argument parser 
 // from this struct. It maps struct fields to command-line flags.
@@ -202,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             println!("Recent 5 statuses:");
             for (i, status) in statuses.iter().enumerate() {
-                println!("{}. {}", i + 1, status.content);
+                println!("{}. {}", i + 1, clean_html(&status.content));
             }
         }
     }
