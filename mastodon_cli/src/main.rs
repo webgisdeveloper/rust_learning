@@ -27,61 +27,19 @@ use serde::{Serialize, Deserialize};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use regex::Regex;
 
-// Central place for shortcode mappings. Using a slice of tuples for clean separation.
-const SHORTCODE_MAPPINGS: &[(&str, &str)] = &[
-    ("apple", "🍎"),
-    ("banana", "🍌"),
-    ("cherry", "🍒"),
-    ("strawberry", "🍓"),
-    ("grape", "🍇"),
-    ("pizza", "🍕"),
-    ("hamburger", "🍔"),
-    ("beer", "🍺"),
-    ("coffee", "☕"),
-    ("smile", "😄"),
-    ("joy", "😂"),
-    ("sob", "😭"),
-    ("angry", "😡"),
-    ("heart", "❤️"),
-    ("fire", "🔥"),
-    ("thumbsup", "👍"),
-    ("thumbsdown", "👎"),
-    ("star", "⭐"),
-    ("rocket", "🚀"),
-    ("party_popper", "🎉"),
-    ("tada", "🎉"),
-    ("sun", "☀️"),
-    ("moon", "🌙"),
-    ("dog", "🐶"),
-    ("cat", "🐱"),
-    ("leaf", "🍃"),
-    ("cloud", "☁️"),
-    ("grinning", "😀"),
-    ("wink", "😉"),
-    ("heart_eyes", "😍"),
-    ("thinking", "🤔"),
-    ("clap", "👏"),
-    ("pray", "🙏"),
-    ("muscle", "💪"),
-    ("sparkles", "✨"),
-    ("broken_heart", "💔"),
-    ("100", "💯"),
-    ("check_mark", "✅"),
-    ("warning", "⚠️"),
-    ("eyes", "👀"),
-];
-
 /// Replaces :shortcodes: with actual emoji characters using a single-pass regex.
+/// Uses the `emojis` crate for comprehensive Unicode support.
 fn replace_emojis(text: &str) -> String {
     let re = Regex::new(r":([a-z0-9_]+):").unwrap();
     
     re.replace_all(text, |caps: &regex::Captures| {
         let shortcode = &caps[1];
-        // Find the emoji in our mapping; if not found, keep the original :shortcode:
-        SHORTCODE_MAPPINGS.iter()
-            .find(|(code, _)| *code == shortcode)
-            .map(|(_, emoji)| emoji.to_string())
-            .unwrap_or_else(|| caps[0].to_string())
+        // Look up the shortcode using the `emojis` crate.
+        // If found, return the emoji character; otherwise, keep the original text.
+        match emojis::get_by_shortcode(shortcode) {
+            Some(emoji) => emoji.as_str().to_string(),
+            None => caps[0].to_string(),
+        }
     }).into_owned()
 }
 

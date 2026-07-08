@@ -11,5 +11,5 @@
 - **Scope Gotcha**: Fetching recent statuses requires `read:accounts` and `read:statuses` scopes. Posting requires `write:statuses`.
 
 ## Key Logic
-- **Emoji Replacement**: Mappings are stored in the `SHORTCODE_MAPPINGS` constant. The `replace_emojis` function uses a single-pass regex for performance.
+- **Emoji Replacement**: Uses the `emojis` crate (`emojis::get_by_shortcode`) for comprehensive Unicode support. The `replace_emojis` function uses a single-pass regex for performance.
 - **HTML Cleaning**: `clean_html` strips HTML tags via regex and decodes entities using the `html-escape` crate.
