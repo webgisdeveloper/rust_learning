@@ -130,7 +130,12 @@ struct Account {
 #[derive(Deserialize, Debug)]
 struct Status {
     content: String,
+    media_attachments: Vec<MediaAttachment>,
 }
+
+/// Response model for a media attachment
+#[derive(Deserialize, Debug)]
+struct MediaAttachment {}
 
 // #[tokio::main] marks the main function as an asynchronous entry point, 
 // setting up the Tokio runtime required by reqwest.
@@ -224,7 +229,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             println!("Recent 5 statuses:");
             for (i, status) in statuses.iter().enumerate() {
-                println!("{}. {}", i + 1, clean_html(&status.content));
+                let image_indicator = if !status.media_attachments.is_empty() { " 🖼️" } else { "" };
+                println!("{}. {}{}", i + 1, clean_html(&status.content), image_indicator);
             }
         }
     }
