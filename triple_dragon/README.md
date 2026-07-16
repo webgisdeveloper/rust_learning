@@ -94,7 +94,7 @@ If $\Delta z$ drops below a tiny threshold $\epsilon$ (typically $10^{-5}$), the
 
 $$t_{\text{linear}} = \frac{i}{i_{\text{max}}}$$
 
-### A. Classic Monochrome (dragon8_s_2.png style)
+### A. Classic Monochrome
 
 To obtain the crisp, high-contrast off-white background from dragon8_s_2.png, the normalized iteration is processed through a non-linear power curve:
 
@@ -106,7 +106,7 @@ Rapid convergence (e.g., $i \approx 0$ in the flat background regions) yields $t
 
 Slow convergence near the chaotic boundary yields $t_{\text{linear}} \to 1$, dropping the gray value down to deep charcoal or pitch black ($0.0$).
 
-### B. Pastel Coral Sky (dragon1_s.jpg style)
+### B. Pastel Coral Sky
 
 For the multi-colored pastel theme, the normalized value $t_{\text{linear}}$ is mapped across a segmented linear interpolation (LERP) ramp:
 
