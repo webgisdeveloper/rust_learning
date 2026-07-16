@@ -1,10 +1,7 @@
-use std::fs::File;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Instant;
+use image::{ImageBuffer, Rgb};
 
-// Custom Complex number implementation to ensure zero dependencies other than the 'image' crate
+/// A highly optimized custom complex number implementation to eliminate external math dependencies
+/// and achieve extreme execution speeds during high-iteration fractal calculation loops.
 #[derive(Clone, Copy, Debug)]
 struct Complex {
     re: f64,
@@ -12,22 +9,20 @@ struct Complex {
 }
 
 impl Complex {
-    // Constructor
+    /// Creates a new complex number instance.
+    #[inline]
     fn new(re: f64, im: f64) -> Self {
         Complex { re, im }
     }
 
-    // Complex addition
+    /// Performs complex addition: (a + bi) + (c + di) = (a + c) + (b + d)i
+    #[inline]
     fn add(self, other: Self) -> Self {
         Complex::new(self.re + other.re, self.im + other.im)
     }
 
-    // Complex subtraction
-    fn sub(self, other: Self) -> Self {
-        Complex::new(self.re - other.re, self.im - other.im)
-    }
-
-    // Complex multiplication
+    /// Performs complex multiplication: (a + bi) * (c + di) = (ac - bd) + (ad + bc)i
+    #[inline]
     fn mul(self, other: Self) -> Self {
         Complex::new(
             self.re * other.re - self.im * other.im,
@@ -35,18 +30,23 @@ impl Complex {
         )
     }
 
-    // Optimized Complex Cube: z³ = (x³ - 3xy²) + i(3x²y - y³)
+    /// Performs optimized complex cubing: z^3 = z * z^2 = (x^3 - 3xy^2) + i(3x^2y - y^3)
+    #[inline]
     fn cube(self) -> Self {
-        let x2 = self.re * self.re;
-        let y2 = self.im * self.im;
-        Complex::new(self.re * (x2 - 3.0 * y2), self.im * (3.0 * x2 - y2))
+        let r2 = self.re * self.re;
+        let i2 = self.im * self.im;
+        Complex::new(
+            self.re * (r2 - 3.0 * i2),
+            self.im * (3.0 * r2 - i2),
+        )
     }
 
-    // Complex Division: handles division by zero safely
+    /// Performs complex division: a / b = (a * conj(b)) / |b|^2
+    #[inline]
     fn div(self, other: Self) -> Self {
         let denom = other.re * other.re + other.im * other.im;
         if denom < 1e-15 {
-            Complex::new(0.0, 0.0)
+            Complex::new(0.0, 0.0) // Return zero on near-zero singularity
         } else {
             Complex::new(
                 (self.re * other.re + self.im * other.im) / denom,
@@ -55,176 +55,209 @@ impl Complex {
         }
     }
 
-    // Square of the magnitude/absolute value
+    /// Computes the squared distance between two complex points (much faster than square-root distance)
+    #[inline]
+    fn dist_sq(self, other: Self) -> f64 {
+        let dr = self.re - other.re;
+        let di = self.im - other.im;
+        dr * dr + di * di
+    }
+
+    /// Computes the squared norm of a complex number
+    #[inline]
     fn norm_sq(self) -> f64 {
         self.re * self.re + self.im * self.im
     }
+}
 
-    // Distance between two complex coordinates
-    fn dist(self, other: Self) -> f64 {
-        ((self.re - other.re).powi(2) + (self.im - other.im).powi(2)).sqrt()
+/// Supported color themes based on the user's uploaded visual references.
+#[derive(Clone, Copy, Debug)]
+enum ColorTheme {
+    /// Crisp, high-contrast monochrome with bright off-white background matching `dragon8_s_2.png`.
+    ClassicMonochrome,
+    /// Soft sky-blue backdrop with pastel pink/salmon cores and blue boundaries matching `dragon1_s.jpg`.
+    PastelCoralSky,
+}
+
+/// Configuration settings for the fractal generator.
+struct RenderConfig {
+    width: usize,
+    height: usize,
+    max_iterations: usize,
+    epsilon: f64,
+    theme: ColorTheme,
+    c: Complex,
+    zoom: f64,
+    center: Complex,
+    color_scale: f64,
+}
+
+/// Linearly interpolates between two RGB float color slices.
+#[inline]
+fn mix(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+/// Computes the final RGB pixel value depending on iteration performance and the chosen theme.
+fn get_pixel_color(converged: bool, iter: usize, max_iter: usize, final_z: Complex, config: &RenderConfig) -> [u8; 3] {
+    let t_linear = iter as f64 / max_iter as f64;
+
+    match config.theme {
+        ColorTheme::ClassicMonochrome => {
+            if converged {
+                // Background maps to light gray/white, slow convergence turns dark charcoal.
+                // Recreates the light gradient curves visible in `dragon8_s_2.png`.
+                let shade = t_linear.powf(config.color_scale).clamp(0.0, 1.0);
+                let gray = (0.96 - 0.96 * shade) * 255.0;
+                [gray as u8, gray as u8, gray as u8]
+            } else {
+                [0, 0, 0] // Outer unconverged bounds remain deep charcoal/black
+            }
+        }
+        ColorTheme::PastelCoralSky => {
+            if converged {
+                // Color ramp anchors taken directly from the color nodes of `dragon1_s.jpg`:
+                let bg_color = [0.83, 0.94, 0.99];      // Soft sky-blue
+                let basin_color = [0.99, 0.91, 0.91];   // Creamy pale pink
+                let coral_color = [0.98, 0.56, 0.50];   // Warm salmon/coral
+                let edge_color = [0.28, 0.27, 0.51];    // Deep space indigo/violet
+
+                let shade = t_linear.powf(config.color_scale * 0.45).clamp(0.0, 1.0);
+
+                let mixed_color = if shade < 0.22 {
+                    mix(bg_color, basin_color, shade / 0.22)
+                } else if shade < 0.70 {
+                    mix(basin_color, coral_color, (shade - 0.22) / 0.48)
+                } else {
+                    mix(coral_color, edge_color, (shade - 0.70) / 0.30)
+                };
+
+                [
+                    (mixed_color[0] * 255.0) as u8,
+                    (mixed_color[1] * 255.0) as u8,
+                    (mixed_color[2] * 255.0) as u8,
+                ]
+            } else {
+                // Unconverged central filaments
+                [38, 28, 69] // Deep Navy/Indigo from the core of `dragon1_s.jpg`
+            }
+        }
     }
 }
 
-// Rendering configuration constants designed to match dragon8_s_2.png
-const WIDTH: u32 = 2000; // Output width (matches high-res export)
-const HEIGHT: u32 = 2000; // Output height
-const MAX_ITERATIONS: usize = 200; // Iteration limit for resolving fine structures
-const EPSILON: f64 = 1e-5; // Convergence tolerance limit (ε)
-const COLOR_SCALE: f64 = 3.2; // Exponential power gradient curve contrast
-const ZOOM: f64 = 3.0; // View scale matching the original viewport
-const CENTER_X: f64 = 0.0; // Complex coordinate plane X center offset
-const CENTER_Y: f64 = 0.0; // Complex coordinate plane Y center offset
+/// Computes the complex plane points and writes the resulting plot into a PNG file.
+fn generate_png(config: &RenderConfig, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut imgbuf = ImageBuffer::new(config.width as u32, config.height as u32);
 
-// The critical 'c' parameter for the triple dragon map
-const C_REAL: f64 = 0.18;
-const C_IMAG: f64 = 0.68;
+    let aspect = config.width as f64 / config.height as f64;
+    let half_width = config.width as f64 / 2.0;
+    let half_height = config.height as f64 / 2.0;
+
+    println!("Rendering started. Resolving grid mapping...");
+
+    for y in 0..config.height {
+        for x in 0..config.width {
+            // Coordinate transformation mapping the pixel grid to the Complex plane (z0)
+            let uv_x = (x as f64 - half_width) / half_width;
+            let uv_y = (half_height - y as f64) / half_height; // Flip y for Cartesian mapping
+
+            let z0_re = config.center.re + uv_x * config.zoom * aspect;
+            let z0_im = config.center.im + uv_y * config.zoom;
+            let mut z = Complex::new(z0_re, z0_im);
+
+            let mut converged = false;
+            let mut iter_count = config.max_iterations;
+            let mut final_z = z;
+
+            // Iterate the rational map formula: z_{n+1} = z_n^3 / (z_n^3 + 1) + c
+            for i in 0..config.max_iterations {
+                let z3 = z.cube();
+                let num = z3;
+                let denom = z3.add(Complex::new(1.0, 0.0));
+                
+                let next_z = num.div(denom).add(config.c);
+
+                // Convergence check: |z_{n+1} - z_n| < epsilon
+                if next_z.dist_sq(z) < config.epsilon * config.epsilon {
+                    iter_count = i;
+                    converged = true;
+                    final_z = next_z;
+                    break;
+                }
+
+                // Escape guard check
+                if next_z.norm_sq() > 1e6 {
+                    iter_count = i;
+                    final_z = next_z;
+                    break;
+                }
+
+                z = next_z;
+            }
+
+            // Get colors based on theme configuration
+            let rgb = get_pixel_color(converged, iter_count, config.max_iterations, final_z, config);
+            imgbuf.put_pixel(x as u32, y as u32, Rgb(rgb));
+        }
+    }
+
+    // Save the image directly to a PNG file
+    imgbuf.save(filename)?;
+    println!("Render successfully completed! Output file written: {}", filename);
+    Ok(())
+}
 
 fn main() {
-    println!("======================================================");
-    println!("     TRIPLE DRAGON COMPLEX FRACTAL GENERATOR (RUST)   ");
-    println!("======================================================");
-    println!("Formula: z_(n+1) = z_n^3 / (z_n^3 + 1) + c (from equation.png)");
-    println!("Configuring canvas resolution: {} x {}", WIDTH, HEIGHT);
-    println!("Target parameters: c = {} + {}i", C_REAL, C_IMAG);
-    println!("Computing grayscale mapping for dragon8_s_2.png style...");
+    // 1. SETUP CLASSSIC MONOCHROME CONFIGURATION (dragon8_s_2.png)
+    let monochrome_config = RenderConfig {
+        width: 2000,
+        height: 2000,
+        max_iterations: 200,
+        epsilon: 1e-5,
+        theme: ColorTheme::ClassicMonochrome,
+        c: Complex::new(0.18, 0.68), // Standard coordinates
+        zoom: 1.25,
+        center: Complex::new(0.0, 0.0),
+        color_scale: 3.2, // Optimized for bright light-gray backdrop
+    };
 
-    let start_time = Instant::now();
+    // 2. SETUP PASTEL CORAL SKY CONFIGURATION (dragon1_s.jpg)
+    let coral_sky_config = RenderConfig {
+        width: 2000,
+        height: 2000,
+        max_iterations: 200,
+        epsilon: 1e-5,
+        theme: ColorTheme::PastelCoralSky,
+        c: Complex::new(0.18, 0.68),
+        zoom: 1.25,
+        center: Complex::new(0.0, 0.0),
+        color_scale: 2.8, // Optimized for vibrant pastel gradient thresholds
+    };
 
-    // Use Arc and Mutex to safely share progress monitoring across working threads
-    let completed_rows = Arc::new(Mutex::new(0));
+    println!("===========================================================");
+    println!("     TRIPLE DRAGON FRACTAL GENERATOR - RUST PNG ENGINE     ");
+    println!("===========================================================");
+    println!("Formula verbatim from equation.png: z_next = z^3 / (z^3 + 1) + c");
+    println!("Output format: High-Resolution Native PNG");
+    println!("-----------------------------------------------------------");
 
-    // Allocate continuous raw buffer for flat grayscale output
-    let num_pixels = (WIDTH * HEIGHT) as usize;
-    let mut image_data = vec![0u8; num_pixels];
-
-    // Determine the number of CPU threads to spawn
-    let num_threads = thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    println!(
-        "Spawning {} system hardware threads for render task...",
-        num_threads
-    );
-
-    let mut handles = vec![];
-    let chunks = image_data.chunks_mut(num_pixels / num_threads);
-
-    // Run parallel execution
-    for (thread_id, chunk) in chunks.enumerate() {
-        let completed_rows = Arc::clone(&completed_rows);
-        let chunk_len = chunk.len();
-
-        // Pass chunk ownership to parallel worker
-        let handle = thread::spawn(move || {
-            let mut local_data = vec![0u8; chunk_len];
-            let aspect = WIDTH as f64 / HEIGHT as f64;
-
-            // Calculate pixel index scope belonging to this specific thread chunk
-            let start_pixel_idx = thread_id * (num_pixels / num_threads);
-
-            for idx in 0..chunk_len {
-                let pixel_idx = start_pixel_idx + idx;
-                let x = (pixel_idx % WIDTH as usize) as f64;
-                let y = (pixel_idx / WIDTH as usize) as f64;
-
-                // Normalize mapping coordinates onto the complex plane
-                let uv_x = x / WIDTH as f64;
-                let uv_y = 1.0 - (y / HEIGHT as f64); // Flip Y-axis to match coordinate grid
-
-                let re = CENTER_X + (uv_x - 0.5) * ZOOM * aspect;
-                let im = CENTER_Y + (uv_y - 0.5) * ZOOM;
-
-                // Setup starting sequence value z0
-                let mut z = Complex::new(re, im);
-                let c = Complex::new(C_REAL, C_IMAG);
-
-                let mut iter = MAX_ITERATIONS;
-                let mut converged = false;
-
-                // Rational sequence iteration loop
-                for i in 0..MAX_ITERATIONS {
-                    let z3 = z.cube();
-                    let num = z3;
-                    let denom = z3.add(Complex::new(1.0, 0.0));
-
-                    // z_{n+1} = z_n³ / (z_n³ + 1) + c
-                    let next_z = num.div(denom).add(c);
-
-                    // Convergence evaluation check: |z_{n+1} - z_n| < epsilon
-                    if next_z.dist(z) < EPSILON {
-                        iter = i;
-                        converged = true;
-                        break;
-                    }
-
-                    // Escape validation step
-                    if next_z.norm_sq() > 1e6 {
-                        iter = i;
-                        break;
-                    }
-
-                    z = next_z;
-                }
-
-                // Perfect translation of dragon8_s_2.png grayscale spectrum
-                let color_val = if converged {
-                    let t_linear = iter as f64 / MAX_ITERATIONS as f64;
-                    // Low-iteration structures resolve to paper-white (0.96 scale), complex boundaries map to deep charcoal
-                    let intensity = 0.96 - 0.96 * t_linear.powf(COLOR_SCALE);
-                    (intensity.clamp(0.0, 1.0) * 255.0) as u8
-                } else {
-                    0 // Unconverged boundary cores are solid charcoal black
-                };
-
-                local_data[idx] = color_val;
-
-                // Progress update block executed by thread 0
-                if thread_id == 0 && idx % (WIDTH as usize * 10) == 0 {
-                    let mut rows = completed_rows.lock().unwrap();
-                    *rows += 10;
-                    let percent = (*rows as f64 / (HEIGHT as f64 / num_threads as f64)) * 100.0;
-                    print!("\rCalculating: {:.1}% complete...", percent.min(100.0));
-                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                }
-            }
-            local_data
-        });
-        handles.push(handle);
+    // Render Monochrome (dragon8_s_2.png theme)
+    println!("Executing Render [1/2]: Classic Monochrome...");
+    if let Err(e) = generate_png(&monochrome_config, "triple_dragon_monochrome.png") {
+        eprintln!("Error writing monochrome plot: {:?}", e);
     }
 
-    // Collect rendered segments back into primary flat array
-    let mut pointer = 0;
-    for handle in handles {
-        let result = handle.join().unwrap();
-        let len = result.len();
-        image_data[pointer..(pointer + len)].copy_from_slice(&result);
-        pointer += len;
+    // Render Pastel Coral Sky (dragon1_s.jpg theme)
+    println!("Executing Render [2/2]: Pastel Coral Sky...");
+    if let Err(e) = generate_png(&coral_sky_config, "triple_dragon_pastel.png") {
+        eprintln!("Error writing pastel plot: {:?}", e);
     }
 
-    print!("\rCalculating: 100.0% complete.\n");
-    let render_duration = start_time.elapsed();
-    println!(
-        "Fractal mathematical calculation completed in: {:?}",
-        render_duration
-    );
-
-    // Save image array into structured Grayscale PNG using the 'image' crate
-    let output_path = Path::new("triple_dragon_output.png");
-    println!("Saving PNG to disk: {:?}", output_path);
-
-    let save_start = Instant::now();
-    image::save_buffer(
-        output_path,
-        &image_data,
-        WIDTH,
-        HEIGHT,
-        image::ColorType::L8,
-    )
-    .expect("Failed to write buffer to output file.");
-
-    println!("Image written successfully in: {:?}", save_start.elapsed());
-    println!("Overall execution time: {:?}", start_time.elapsed());
-    println!("======================================================");
-    println!("Done! Check the file 'triple_dragon_output.png' in your project folder.");
+    println!("-----------------------------------------------------------");
+    println!("Done! All PNG files have been written directly to your directory.");
+    println!("===========================================================");
 }
