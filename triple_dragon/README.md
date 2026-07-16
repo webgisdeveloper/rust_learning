@@ -2,11 +2,7 @@
 
 This repository implements the high-performance visualization of the Triple Dragon Fractal, a beautiful chaotic structure arising from the iteration of a perturbed rational function on the complex plane $\mathbb{C}$.
 
-The project contains two implementations:
-
-An interactive, GPU-accelerated WebGL application (index.html) featuring an AI Copilot.
-
-A high-performance multi-threaded Rust renderer (triple_dragon.rs) that exports pixel-perfect PNG images natively.
+The project contains a high-performance multi-threaded Rust renderer (triple_dragon.rs) that exports pixel-perfect PNG images natively.
 
 ## 1. The Core Formula
 
