@@ -1,0 +1,9 @@
+[package]
+name = "triple_dragon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+num-complex = "0.4.3"
+image = "0.24.7"
+rayon = "1.8.0"
