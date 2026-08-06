@@ -103,6 +103,12 @@ struct Args {
     // We make this optional so we can fall back to the environment variable.
     #[arg(short, long)]
     token: Option<String>,
+
+    /// Number of recent statuses to fetch (only when --message is not provided)
+    // Primary flag is --list (as requested); --limit is an alias matching the Mastodon API param.
+    // Range 1..=40 matches Mastodon's max limit; defaults to 5 to preserve existing behavior.
+    #[arg(short, long, alias = "limit", default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=40))]
+    list: u32,
 }
 
 /// Request body for creating a new status
@@ -208,7 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let account_id = account_resp.json::<Account>().await?.id;
 
         // 2. Get recent statuses
-        let statuses_url = format!("https://mastodon.social/api/v1/accounts/{}/statuses?limit=5", account_id);
+        let statuses_url = format!("https://mastodon.social/api/v1/accounts/{}/statuses?limit={}", account_id, args.list);
         let statuses_resp = client
             .get(statuses_url)
             .header(AUTHORIZATION, &auth_header)
@@ -227,7 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if statuses.is_empty() {
             println!("No recent statuses found.");
         } else {
-            println!("Recent 5 statuses:");
+            println!("Recent {} statuses:", args.list);
             for (i, status) in statuses.iter().enumerate() {
                 let image_indicator = if !status.media_attachments.is_empty() { " 🖼️" } else { "" };
                 println!("{}. {}{}", i + 1, clean_html(&status.content), image_indicator);
