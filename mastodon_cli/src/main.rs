@@ -26,11 +26,14 @@ use clap::Parser;
 use serde::{Serialize, Deserialize};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use regex::Regex;
+use std::sync::OnceLock;
+
+static EMOJI_RE: OnceLock<Regex> = OnceLock::new();
 
 /// Replaces :shortcodes: with actual emoji characters using a single-pass regex.
 /// Uses the `emojis` crate for comprehensive Unicode support.
 fn replace_emojis(text: &str) -> String {
-    let re = Regex::new(r":([a-z0-9_]+):").unwrap();
+    let re = EMOJI_RE.get_or_init(|| Regex::new(r":([a-z0-9_]+):").unwrap());
     
     re.replace_all(text, |caps: &regex::Captures| {
         let shortcode = &caps[1];
@@ -43,10 +46,12 @@ fn replace_emojis(text: &str) -> String {
     }).into_owned()
 }
 
+static HTML_RE: OnceLock<Regex> = OnceLock::new();
+
 /// Strips HTML tags and decodes HTML entities.
 fn clean_html(text: &str) -> String {
     // 1. Remove HTML tags using regex
-    let re = Regex::new(r"<[^>]*>").unwrap();
+    let re = HTML_RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap());
     let stripped = re.replace_all(text, "");
     
     // 2. Decode HTML entities (e.g., &gt; -> >)
