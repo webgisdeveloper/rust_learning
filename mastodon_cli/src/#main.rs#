@@ -1,3 +1,5 @@
+
+
 /*
 WORKFLOW OVERVIEW:
 1. Argument Parsing: The program starts by parsing command-line arguments using `clap`.
@@ -103,12 +105,6 @@ struct Args {
     // We make this optional so we can fall back to the environment variable.
     #[arg(short, long)]
     token: Option<String>,
-
-    /// Number of recent statuses to fetch (only when --message is not provided)
-    // Primary flag is --list (as requested); --limit is an alias matching the Mastodon API param.
-    // Range 1..=40 matches Mastodon's max limit; defaults to 5 to preserve existing behavior.
-    #[arg(short, long, alias = "limit", default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=40))]
-    list: u32,
 }
 
 /// Request body for creating a new status
@@ -137,7 +133,6 @@ struct Account {
 struct Status {
     content: String,
     media_attachments: Vec<MediaAttachment>,
-    in_reply_to_id: Option<String>,
 }
 
 /// Response model for a media attachment
@@ -215,7 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let account_id = account_resp.json::<Account>().await?.id;
 
         // 2. Get recent statuses
-        let statuses_url = format!("https://mastodon.social/api/v1/accounts/{}/statuses?limit={}", account_id, args.list);
+        let statuses_url = format!("https://mastodon.social/api/v1/accounts/{}/statuses?limit=5", account_id);
         let statuses_resp = client
             .get(statuses_url)
             .header(AUTHORIZATION, &auth_header)
@@ -234,9 +229,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if statuses.is_empty() {
             println!("No recent statuses found.");
         } else {
-            println!("Recent {} statuses:", args.list);
+            println!("Recent 5 statuses:");
             for (i, status) in statuses.iter().enumerate() {
-                println!("{}", format_status(i, status));
+                let image_indicator = if !status.media_attachments.is_empty() { " 🖼️" } else { "" };
+                println!("{}. {}{}", i + 1, clean_html(&status.content), image_indicator);
             }
         }
     }
@@ -245,16 +241,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Formats a status for display, including reply and image indicators.
-fn format_status(index: usize, status: &Status) -> String {
-    let image_indicator = if !status.media_attachments.is_empty() { " 🖼️" } else { "" };
-    let reply_indicator = if status.in_reply_to_id.is_some() { "🧵 " } else { "" };
-    format!("{}. {}{}{}", index + 1, reply_indicator, clean_html(&status.content), image_indicator)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::replace_emojis;
 
     #[test]
     fn replaces_apple_shortcode_with_emoji() {
@@ -272,55 +261,5 @@ mod tests {
     fn replaces_multiple_common_shortcodes() {
         let result = replace_emojis("Launch :rocket: and celebrate :tada:");
         assert_eq!(result, "Launch 🚀 and celebrate 🎉");
-    }
-
-    #[test]
-    fn formats_regular_status_correctly() {
-        let status = Status {
-            content: "Hello world!".to_string(),
-            media_attachments: vec![],
-            in_reply_to_id: None,
-        };
-        assert_eq!(format_status(0, &status), "1. Hello world!");
-    }
-
-    #[test]
-    fn formats_reply_status_correctly() {
-        let status = Status {
-            content: "Replying to you!".to_string(),
-            media_attachments: vec![],
-            in_reply_to_id: Some("123".to_string()),
-        };
-        assert_eq!(format_status(0, &status), "1. 🧵 Replying to you!");
-    }
-
-    #[test]
-    fn formats_status_with_image_correctly() {
-        let status = Status {
-            content: "Check this out!".to_string(),
-            media_attachments: vec![MediaAttachment {}],
-            in_reply_to_id: None,
-        };
-        assert_eq!(format_status(0, &status), "1. Check this out! 🖼️");
-    }
-
-    #[test]
-    fn formats_reply_with_image_correctly() {
-        let status = Status {
-            content: "Replying with image!".to_string(),
-            media_attachments: vec![MediaAttachment {}],
-            in_reply_to_id: Some("456".to_string()),
-        };
-        assert_eq!(format_status(0, &status), "1. 🧵 Replying with image! 🖼️");
-    }
-
-    #[test]
-    fn formats_with_html_content_correctly() {
-        let status = Status {
-            content: "<strong>Bold</strong> text".to_string(),
-            media_attachments: vec![],
-            in_reply_to_id: None,
-        };
-        assert_eq!(format_status(0, &status), "1. Bold text");
     }
 }

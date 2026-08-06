@@ -1,0 +1,3 @@
+2026-08-06T15:00:11.266Z === verify start: Modify the status display logic in `mastodon_cli` so that statuses identified as replies (those containing an `in_reply_to_id`) are prefixed with the 🧵 emoji. The resulting output format for a reply should be: `[index]. 🧵 [content] [image_indicator]`. ===
+2026-08-06T15:00:44.890Z === verify end: ok ===
+2026-08-06T15:00:44.899Z === verify tree changes: MODIFIED [mastodon_cli/src/main.rs] NEW [mastodon_cli/.agents/, mastodon_cli/src/#main.rs#, mastodon_cli/src/.#main.rs] ===
