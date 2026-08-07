@@ -75,6 +75,10 @@ pub struct UploadArgs {
     /// Content-Type override (auto-detected if absent).
     #[arg(long)]
     pub content_type: Option<String>,
+
+    /// Short description of the file to store in metadata.
+    #[arg(short, long)]
+    pub description: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -140,6 +144,29 @@ mod tests {
         assert_eq!(args.file, PathBuf::from("./photo.jpg"));
         assert_eq!(args.r2.bucket, "my-bucket");
         assert_eq!(args.r2.account_id, Some("acc123".to_string()));
+    }
+
+    #[test]
+    fn parses_upload_with_description() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "upload",
+            "./photo.jpg",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+            "-d",
+            "A test description",
+        ])
+        .expect("parse should succeed");
+
+        let Commands::Upload(args) = cli.command else {
+            panic!("expected upload");
+        };
+        assert_eq!(args.description, Some("A test description".to_string()));
     }
 
     #[test]

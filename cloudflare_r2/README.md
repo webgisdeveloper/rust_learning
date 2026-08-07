@@ -4,12 +4,13 @@ A Rust command line tool to upload, list and download files on Cloudflare R2 (S3
 
 ## Features
 
-- `upload` subcommand: Upload a local file to R2.
+- `upload` subcommand: Upload a local file to R2 (supports optional description metadata).
 - `list` subcommand: Enumerate objects in a bucket (supports pagination, prefixes, and detailed output).
 - `download` subcommand: Stream an object to a local file without loading it entirely into memory.
 - Credentials via env vars or flags (flags override env).
 - Endpoint auto-derived from `R2_ACCOUNT_ID` → `https://{account_id}.r2.cloudflarestorage.com` or explicit `R2_ENDPOINT`.
 - Content-Type auto-detected via `mime_guess` for uploads, overridable with `--content-type`.
+- Optional file description stored in metadata via `-d` / `--description` flag (`x-amz-meta-description`).
 - Automatically attaches computer hostname in object metadata under key `host` (`x-amz-meta-host`).
 - Streaming upload (no full file buffering), `--verbose` logging, proper exit codes.
 - `.env` support via `dotenvy`.
@@ -41,6 +42,9 @@ cargo install --path .
 cloudflare_r2 upload ./photo.jpg --bucket my-bucket --key images/photo.jpg \
   --account-id $R2_ACCOUNT_ID --access-key $R2_ACCESS_KEY_ID --secret-key $R2_SECRET_ACCESS_KEY
 
+# Upload with optional description metadata (-d / --description)
+cloudflare_r2 upload ./photo.jpg --bucket my-bucket -d "Vacation photo"
+
 # Upload using env vars (recommended)
 export R2_ACCOUNT_ID=abc123
 export R2_ACCESS_KEY_ID=...
@@ -49,7 +53,7 @@ export R2_BUCKET=sdk-example
 
 cloudflare_r2 upload ./README.md --verbose
 # key defaults to basename: README.md
-cloudflare_r2 upload ./README.md --key test/README.md --verbose
+cloudflare_r2 upload ./README.md --key test/README.md --description "Project README file" --verbose
 ```
 
 ### List

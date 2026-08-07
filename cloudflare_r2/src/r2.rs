@@ -43,6 +43,7 @@ pub async fn run_upload(args: UploadArgs, verbose: bool) -> anyhow::Result<()> {
         &key,
         &args.file,
         args.content_type,
+        args.description,
         verbose,
     )
     .await
@@ -246,6 +247,7 @@ async fn upload(
     key: &str,
     file: &Path,
     content_type: Option<String>,
+    description: Option<String>,
     verbose: bool,
 ) -> anyhow::Result<()> {
     // mime_guess helps us set the correct Content-Type based on the file extension.
@@ -268,8 +270,12 @@ async fn upload(
             .await
             .map(|metadata| metadata.len())
             .unwrap_or(0);
+        let desc_info = description
+            .as_deref()
+            .map(|d| format!(", description: \"{d}\""))
+            .unwrap_or_default();
         eprintln!(
-            "Uploading {} ({} bytes) -> s3://{}/{} as {} (host: {})",
+            "Uploading {} ({} bytes) -> s3://{}/{} as {} (host: {}{})",
             file.display(),
             length,
             bucket,
@@ -277,7 +283,8 @@ async fn upload(
             content_type
                 .as_deref()
                 .unwrap_or("application/octet-stream"),
-            host
+            host,
+            desc_info
         );
     }
 
@@ -290,6 +297,9 @@ async fn upload(
         .body(body);
     if let Some(content_type) = content_type {
         request = request.content_type(content_type);
+    }
+    if let Some(description) = description {
+        request = request.metadata("description", description);
     }
 
     request
