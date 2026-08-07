@@ -311,8 +311,12 @@ async fn upload(
     Ok(())
 }
 
-/// Attempts to fetch the `host` user metadata field for a given object using HeadObject.
-async fn fetch_object_host(client: &aws_sdk_s3::Client, bucket: &str, key: &str) -> String {
+/// Attempts to fetch the `host` and `description` user metadata fields for a given object using HeadObject.
+async fn fetch_object_metadata(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+) -> (String, String) {
     client
         .head_object()
         .bucket(bucket)
@@ -320,12 +324,19 @@ async fn fetch_object_host(client: &aws_sdk_s3::Client, bucket: &str, key: &str)
         .send()
         .await
         .ok()
-        .and_then(|res| {
-            res.metadata()
-                .and_then(|meta| meta.get("host").cloned())
-                .filter(|host| !host.trim().is_empty())
+        .map(|res| {
+            let meta = res.metadata();
+            let host = meta
+                .and_then(|m| m.get("host").cloned())
+                .filter(|h| !h.trim().is_empty())
+                .unwrap_or_else(|| "-".to_string());
+            let description = meta
+                .and_then(|m| m.get("description").cloned())
+                .filter(|d| !d.trim().is_empty())
+                .unwrap_or_else(|| "-".to_string());
+            (host, description)
         })
-        .unwrap_or_else(|| "-".to_string())
+        .unwrap_or_else(|| ("-".to_string(), "-".to_string()))
 }
 
 /// Handles paginated object listing from R2.
@@ -369,7 +380,7 @@ async fn list_objects(
 
         // Print header for long output mode on the first page if objects are present.
         if first_page && long && !contents.is_empty() {
-            println!("KEY\tSIZE\tLAST_MODIFIED\tHOST");
+            println!("KEY\tSIZE\tLAST_MODIFIED\tHOST\tDESCRIPTION");
         }
         first_page = false;
 
@@ -387,8 +398,8 @@ async fn list_objects(
                             .unwrap_or_else(|_| "-".to_string())
                     })
                     .unwrap_or_else(|| "-".to_string());
-                let host = fetch_object_host(client, bucket, key).await;
-                println!("{key}\t{size}\t{modified}\t{host}");
+                let (host, description) = fetch_object_metadata(client, bucket, key).await;
+                println!("{key}\t{size}\t{modified}\t{host}\t{description}");
             } else {
                 println!("{key}");
             }
