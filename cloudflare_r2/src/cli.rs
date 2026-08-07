@@ -29,6 +29,8 @@ pub enum Commands {
     List(ListArgs),
     /// Download an object from a bucket
     Download(DownloadArgs),
+    /// Delete an object from a bucket
+    Delete(DeleteArgs),
 }
 
 /// Shared arguments used by Upload, List and Download.
@@ -113,6 +115,17 @@ pub struct DownloadArgs {
     /// Overwrite the destination if it already exists.
     #[arg(long)]
     pub force: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DeleteArgs {
+    /// Compose shared R2 arguments into this struct.
+    #[command(flatten)]
+    pub r2: R2Args,
+
+    /// Object key in R2 to delete.
+    #[arg(value_name = "KEY")]
+    pub key: String,
 }
 
 #[cfg(test)]
@@ -220,6 +233,30 @@ mod tests {
         };
         assert_eq!(args.key, "images/photo.jpg");
         assert_eq!(args.output, Some(PathBuf::from("./local.jpg")));
+        assert_eq!(args.r2.bucket, "my-bucket");
+    }
+
+    #[test]
+    fn parses_delete() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "delete",
+            "images/photo.jpg",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+            "--account-id",
+            "acc123",
+        ])
+        .expect("parse should succeed");
+
+        let Commands::Delete(args) = cli.command else {
+            panic!("expected delete");
+        };
+        assert_eq!(args.key, "images/photo.jpg");
         assert_eq!(args.r2.bucket, "my-bucket");
     }
 

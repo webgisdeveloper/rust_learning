@@ -1,4 +1,4 @@
-use crate::cli::{DownloadArgs, ListArgs, R2Args, UploadArgs};
+use crate::cli::{DeleteArgs, DownloadArgs, ListArgs, R2Args, UploadArgs};
 use anyhow::{Context, bail};
 use aws_sdk_s3::primitives::ByteStream;
 use std::path::{Path, PathBuf};
@@ -88,6 +88,59 @@ pub async fn run_download(args: DownloadArgs, verbose: bool) -> anyhow::Result<(
 
     let client = build_client(&endpoint_url, &args.r2.access_key, &args.r2.secret_key).await;
     download(&client, &args.r2.bucket, key, &output, verbose).await
+}
+
+/// Entry point for the delete command.
+pub async fn run_delete(args: DeleteArgs, verbose: bool) -> anyhow::Result<()> {
+    let key = args.key.trim();
+    if key.is_empty() {
+        bail!("object key must not be empty");
+    }
+
+    let endpoint_url = endpoint_for(&args.r2)?;
+    if verbose {
+        eprintln!(
+            "Endpoint: {}\nBucket: {}\nKey: {}",
+            endpoint_url, args.r2.bucket, key
+        );
+    }
+
+    let client = build_client(&endpoint_url, &args.r2.access_key, &args.r2.secret_key).await;
+    delete(&client, &args.r2.bucket, key, verbose).await
+}
+
+/// Deletes an object from R2.
+async fn delete(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+    verbose: bool,
+) -> anyhow::Result<()> {
+    match client.head_object().bucket(bucket).key(key).send().await {
+        Ok(_) => {}
+        Err(aws_sdk_s3::error::SdkError::ServiceError(error)) if error.err().is_not_found() => {
+            bail!("file not found: s3://{bucket}/{key}");
+        }
+        Err(error) => {
+            return Err(error).context(
+                "head_object failed — check bucket, key, credentials, endpoint and network",
+            );
+        }
+    }
+
+    client
+        .delete_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .context("delete_object failed — check bucket, key, credentials, endpoint and network")?;
+
+    if verbose {
+        eprintln!("Deleted s3://{bucket}/{key}");
+    }
+    println!("Deleted s3://{bucket}/{key}");
+    Ok(())
 }
 
 /// Choose the requested output path or safely derive a local filename from the key.
