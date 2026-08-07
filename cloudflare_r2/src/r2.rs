@@ -356,6 +356,11 @@ async fn list_objects(
                 eprintln!("No objects found in s3://{bucket}/");
             }
         }
+
+        // Print header for long output mode on the first page if objects are present.
+        if first_page && long && !contents.is_empty() {
+            println!("KEY\tSIZE\tLAST_MODIFIED\tHOST");
+        }
         first_page = false;
 
         // Iterate over objects in the current page.
