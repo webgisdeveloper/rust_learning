@@ -230,6 +230,15 @@ async fn build_client(
     aws_sdk_s3::Client::from_conf(s3_config)
 }
 
+/// Helper to obtain the hostname of the current machine.
+fn get_hostname() -> String {
+    hostname::get()
+        .map(|h| h.to_string_lossy().into_owned())
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
 /// Handles the actual streaming upload to R2.
 async fn upload(
     client: &aws_sdk_s3::Client,
@@ -252,25 +261,33 @@ async fn upload(
         .await
         .with_context(|| format!("failed to read {}", file.display()))?;
 
+    let host = get_hostname();
+
     if verbose {
         let length = tokio::fs::metadata(file)
             .await
             .map(|metadata| metadata.len())
             .unwrap_or(0);
         eprintln!(
-            "Uploading {} ({} bytes) -> s3://{}/{} as {}",
+            "Uploading {} ({} bytes) -> s3://{}/{} as {} (host: {})",
             file.display(),
             length,
             bucket,
             key,
             content_type
                 .as_deref()
-                .unwrap_or("application/octet-stream")
+                .unwrap_or("application/octet-stream"),
+            host
         );
     }
 
-    // Build the put_object request.
-    let mut request = client.put_object().bucket(bucket).key(key).body(body);
+    // Build the put_object request and automatically attach the host metadata.
+    let mut request = client
+        .put_object()
+        .bucket(bucket)
+        .key(key)
+        .metadata("host", host)
+        .body(body);
     if let Some(content_type) = content_type {
         request = request.content_type(content_type);
     }
@@ -410,5 +427,11 @@ mod tests {
             derive_output_path("images/photo.jpg", Some(output.clone())).unwrap(),
             output
         );
+    }
+
+    #[test]
+    fn returns_hostname() {
+        let host = get_hostname();
+        assert!(!host.is_empty());
     }
 }

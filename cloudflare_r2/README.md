@@ -10,6 +10,7 @@ A Rust command line tool to upload, list and download files on Cloudflare R2 (S3
 - Credentials via env vars or flags (flags override env).
 - Endpoint auto-derived from `R2_ACCOUNT_ID` → `https://{account_id}.r2.cloudflarestorage.com` or explicit `R2_ENDPOINT`.
 - Content-Type auto-detected via `mime_guess` for uploads, overridable with `--content-type`.
+- Automatically attaches computer hostname in object metadata under key `host` (`x-amz-meta-host`).
 - Streaming upload (no full file buffering), `--verbose` logging, proper exit codes.
 - `.env` support via `dotenvy`.
 
