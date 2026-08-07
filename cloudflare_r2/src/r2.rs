@@ -351,6 +351,67 @@ fn format_date(date: &aws_smithy_types::DateTime) -> String {
     }
 }
 
+/// Item representation for long list format table output.
+#[derive(Debug)]
+struct LongListItem {
+    key: String,
+    size: u64,
+    modified: String,
+    host: String,
+    description: String,
+}
+
+/// Formats long list items into an aligned tabular string.
+fn format_long_table(items: &[LongListItem]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+
+    let w_key = items.iter().map(|i| i.key.len()).max().unwrap_or(0).max(3);
+    let w_size = items
+        .iter()
+        .map(|i| i.size.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max(4);
+    let w_mod = items
+        .iter()
+        .map(|i| i.modified.len())
+        .max()
+        .unwrap_or(0)
+        .max(13);
+    let w_host = items.iter().map(|i| i.host.len()).max().unwrap_or(0).max(4);
+    let w_desc = items
+        .iter()
+        .map(|i| i.description.len())
+        .max()
+        .unwrap_or(0)
+        .max(11);
+
+    let mut out = Vec::with_capacity(items.len() + 1);
+    out.push(format!(
+        "{:<w_key$}  {:>w_size$}  {:<w_mod$}  {:<w_host$}  {:<w_desc$}",
+        "KEY", "SIZE", "LAST_MODIFIED", "HOST", "DESCRIPTION"
+    ));
+
+    for item in items {
+        out.push(format!(
+            "{:<w_key$}  {:>w_size$}  {:<w_mod$}  {:<w_host$}  {:<w_desc$}",
+            item.key, item.size, item.modified, item.host, item.description
+        ));
+    }
+
+    out.join("\n")
+}
+
+/// Prints long list items formatted as an aligned table.
+fn print_long_table(items: &[LongListItem]) {
+    let table = format_long_table(items);
+    if !table.is_empty() {
+        println!("{table}");
+    }
+}
+
 /// Handles paginated object listing from R2.
 async fn list_objects(
     client: &aws_sdk_s3::Client,
@@ -363,6 +424,7 @@ async fn list_objects(
     let mut continuation_token = None;
     let mut total = 0usize;
     let mut first_page = true;
+    let mut long_items = Vec::new();
 
     loop {
         let mut request = client.list_objects_v2().bucket(bucket);
@@ -389,11 +451,6 @@ async fn list_objects(
                 eprintln!("No objects found in s3://{bucket}/");
             }
         }
-
-        // Print header for long output mode on the first page if objects are present.
-        if first_page && long && !contents.is_empty() {
-            println!("KEY\tSIZE\tLAST_MODIFIED\tHOST\tDESCRIPTION");
-        }
         first_page = false;
 
         // Iterate over objects in the current page.
@@ -401,13 +458,19 @@ async fn list_objects(
             total += 1;
             let key = object.key().unwrap_or("<no-key>");
             if long {
-                let size = object.size().unwrap_or(0);
+                let size = object.size().unwrap_or(0) as u64;
                 let modified = object
                     .last_modified()
                     .map(format_date)
                     .unwrap_or_else(|| "-".to_string());
                 let (host, description) = fetch_object_metadata(client, bucket, key).await;
-                println!("{key}\t{size}\t{modified}\t{host}\t{description}");
+                long_items.push(LongListItem {
+                    key: key.to_string(),
+                    size,
+                    modified,
+                    host,
+                    description,
+                });
             } else {
                 println!("{key}");
             }
@@ -425,6 +488,10 @@ async fn list_objects(
         if continuation_token.is_none() {
             bail!("R2 returned a truncated object list without a continuation token");
         }
+    }
+
+    if long {
+        print_long_table(&long_items);
     }
 
     if verbose {
@@ -491,5 +558,34 @@ mod tests {
     fn formats_date_naturally() {
         let dt = aws_smithy_types::DateTime::from_secs_and_nanos(1786121765, 613_000_000);
         assert_eq!(format_date(&dt), "2026-08-07 16:56:05");
+    }
+
+    #[test]
+    fn formats_long_table_aligned() {
+        let items = vec![
+            LongListItem {
+                key: "photo.jpg".to_string(),
+                size: 89201,
+                modified: "2026-08-07 16:56:05".to_string(),
+                host: "host1".to_string(),
+                description: "Vacation".to_string(),
+            },
+            LongListItem {
+                key: "test/README.md".to_string(),
+                size: 4614,
+                modified: "2026-08-07 17:00:00".to_string(),
+                host: "host2".to_string(),
+                description: "-".to_string(),
+            },
+        ];
+
+        let table = format_long_table(&items);
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("KEY"));
+        assert!(lines[0].contains("SIZE"));
+        assert!(lines[0].contains("LAST_MODIFIED"));
+        assert!(lines[0].contains("HOST"));
+        assert!(lines[0].contains("DESCRIPTION"));
     }
 }
