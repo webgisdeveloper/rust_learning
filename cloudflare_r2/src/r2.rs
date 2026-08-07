@@ -301,6 +301,23 @@ async fn upload(
     Ok(())
 }
 
+/// Attempts to fetch the `host` user metadata field for a given object using HeadObject.
+async fn fetch_object_host(client: &aws_sdk_s3::Client, bucket: &str, key: &str) -> String {
+    client
+        .head_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .ok()
+        .and_then(|res| {
+            res.metadata()
+                .and_then(|meta| meta.get("host").cloned())
+                .filter(|host| !host.trim().is_empty())
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
 /// Handles paginated object listing from R2.
 async fn list_objects(
     client: &aws_sdk_s3::Client,
@@ -355,7 +372,8 @@ async fn list_objects(
                             .unwrap_or_else(|_| "-".to_string())
                     })
                     .unwrap_or_else(|| "-".to_string());
-                println!("{key}\t{size}\t{modified}");
+                let host = fetch_object_host(client, bucket, key).await;
+                println!("{key}\t{size}\t{modified}\t{host}");
             } else {
                 println!("{key}");
             }

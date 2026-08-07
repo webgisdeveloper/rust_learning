@@ -61,7 +61,7 @@ cloudflare_r2 list --bucket $R2_BUCKET
 # List with prefix (e.g. images folder)
 cloudflare_r2 list --bucket $R2_BUCKET --prefix images/
 
-# List with detailed output (size, last modified)
+# List with detailed output (size, last modified, host metadata)
 cloudflare_r2 list --bucket $R2_BUCKET --long
 
 # Combine prefix and detailed output
