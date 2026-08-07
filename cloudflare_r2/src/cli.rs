@@ -1,22 +1,26 @@
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
+/// Top-level CLI structure.
+/// #[derive(Parser)] allows clap to generate the parsing logic automatically.
 #[derive(Parser, Debug)]
 #[command(
     name = "cloudflare-r2",
     version,
     about = "Upload and list files on Cloudflare R2",
-    arg_required_else_help = true
+    arg_required_else_help = true // If no subcommand is provided, show help automatically.
 )]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
-    /// Enable verbose output
+    /// Enable verbose output.
+    /// global=true makes this flag available for all subcommands.
     #[arg(short, long, global = true)]
     pub verbose: bool,
 }
 
+/// Defines the available subcommands for the tool.
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Upload a file to R2
@@ -25,57 +29,63 @@ pub enum Commands {
     List(ListArgs),
 }
 
+/// Shared arguments used by both Upload and List.
+/// Using #[derive(Args)] allows us to "flatten" this struct into other argument structs.
 #[derive(Args, Debug)]
 pub struct R2Args {
-    /// R2 bucket name (or env R2_BUCKET)
+    /// R2 bucket name. The `env` attribute tells clap to check 
+    /// the environment variable R2_BUCKET if the flag is not provided.
     #[arg(short, long, env = "R2_BUCKET")]
     pub bucket: String,
 
-    /// Cloudflare Account ID (or env R2_ACCOUNT_ID)
+    /// Cloudflare Account ID.
     #[arg(long, env = "R2_ACCOUNT_ID")]
     pub account_id: Option<String>,
 
-    /// Full R2 endpoint URL (or env R2_ENDPOINT); if omitted, https://{account_id}.r2.cloudflarestorage.com
+    /// Full R2 endpoint URL.
     #[arg(long, env = "R2_ENDPOINT")]
     pub endpoint: Option<String>,
 
-    /// Access Key ID (or env R2_ACCESS_KEY_ID)
+    /// Access Key ID. `hide_env_values=true` prevents the secret from being 
+    /// printed in the --help output.
     #[arg(long, env = "R2_ACCESS_KEY_ID", hide_env_values = true)]
     pub access_key: String,
 
-    /// Secret Access Key (or env R2_SECRET_ACCESS_KEY)
+    /// Secret Access Key.
     #[arg(long, env = "R2_SECRET_ACCESS_KEY", hide_env_values = true)]
     pub secret_key: String,
 }
 
 #[derive(Args, Debug)]
 pub struct UploadArgs {
+    /// Compose shared R2 arguments into this struct.
     #[command(flatten)]
     pub r2: R2Args,
 
-    /// Local file to upload
+    /// Local file to upload. PathBuf is used for cross-platform file path handling.
     #[arg(value_name = "FILE")]
     pub file: PathBuf,
 
-    /// Object key in bucket (defaults to filename)
+    /// Object key in bucket (defaults to filename).
     #[arg(short, long)]
     pub key: Option<String>,
 
-    /// Content-Type override (auto-detected if absent)
+    /// Content-Type override (auto-detected if absent).
     #[arg(long)]
     pub content_type: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
+    /// Compose shared R2 arguments into this struct.
     #[command(flatten)]
     pub r2: R2Args,
 
-    /// Only list keys with this prefix (e.g. "images/")
+    /// Only list keys with this prefix (e.g. "images/").
     #[arg(long)]
     pub prefix: Option<String>,
 
-    /// Show detailed output (size, last modified)
+    /// Show detailed output (size, last modified).
     #[arg(short, long)]
     pub long: bool,
 }
@@ -101,6 +111,8 @@ mod tests {
         ])
         .expect("parse should succeed");
 
+        // We use a 'let-else' statement here, a concise way to unwrap enum variants 
+        // while providing a fallback (panic in this case).
         let Commands::Upload(args) = cli.command else {
             panic!("expected upload");
         };
