@@ -339,6 +339,18 @@ async fn fetch_object_metadata(
         .unwrap_or_else(|| ("-".to_string(), "-".to_string()))
 }
 
+/// Formats a DateTime into a clean, human-readable string (YYYY-MM-DD HH:MM:SS).
+fn format_date(date: &aws_smithy_types::DateTime) -> String {
+    let Ok(s) = date.fmt(aws_smithy_types::date_time::Format::DateTime) else {
+        return "-".to_string();
+    };
+    if s.len() >= 19 {
+        s[..19].replace('T', " ")
+    } else {
+        s.replace('T', " ").replace('Z', "")
+    }
+}
+
 /// Handles paginated object listing from R2.
 async fn list_objects(
     client: &aws_sdk_s3::Client,
@@ -390,13 +402,9 @@ async fn list_objects(
             let key = object.key().unwrap_or("<no-key>");
             if long {
                 let size = object.size().unwrap_or(0);
-                // Formatting the AWS DateTime object into a readable string.
                 let modified = object
                     .last_modified()
-                    .map(|date| {
-                        date.fmt(aws_smithy_types::date_time::Format::DateTime)
-                            .unwrap_or_else(|_| "-".to_string())
-                    })
+                    .map(format_date)
                     .unwrap_or_else(|| "-".to_string());
                 let (host, description) = fetch_object_metadata(client, bucket, key).await;
                 println!("{key}\t{size}\t{modified}\t{host}\t{description}");
@@ -477,5 +485,11 @@ mod tests {
     fn returns_hostname() {
         let host = get_hostname();
         assert!(!host.is_empty());
+    }
+
+    #[test]
+    fn formats_date_naturally() {
+        let dt = aws_smithy_types::DateTime::from_secs_and_nanos(1786121765, 613_000_000);
+        assert_eq!(format_date(&dt), "2026-08-07 16:56:05");
     }
 }
