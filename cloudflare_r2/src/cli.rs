@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[command(
     name = "cloudflare-r2",
     version,
-    about = "Upload and list files on Cloudflare R2",
+    about = "Upload, list and download files on Cloudflare R2",
     arg_required_else_help = true // If no subcommand is provided, show help automatically.
 )]
 pub struct Cli {
@@ -27,13 +27,15 @@ pub enum Commands {
     Upload(UploadArgs),
     /// List objects in a bucket
     List(ListArgs),
+    /// Download an object from a bucket
+    Download(DownloadArgs),
 }
 
-/// Shared arguments used by both Upload and List.
+/// Shared arguments used by Upload, List and Download.
 /// Using #[derive(Args)] allows us to "flatten" this struct into other argument structs.
 #[derive(Args, Debug)]
 pub struct R2Args {
-    /// R2 bucket name. The `env` attribute tells clap to check 
+    /// R2 bucket name. The `env` attribute tells clap to check
     /// the environment variable R2_BUCKET if the flag is not provided.
     #[arg(short, long, env = "R2_BUCKET")]
     pub bucket: String,
@@ -46,7 +48,7 @@ pub struct R2Args {
     #[arg(long, env = "R2_ENDPOINT")]
     pub endpoint: Option<String>,
 
-    /// Access Key ID. `hide_env_values=true` prevents the secret from being 
+    /// Access Key ID. `hide_env_values=true` prevents the secret from being
     /// printed in the --help output.
     #[arg(long, env = "R2_ACCESS_KEY_ID", hide_env_values = true)]
     pub access_key: String,
@@ -90,6 +92,25 @@ pub struct ListArgs {
     pub long: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct DownloadArgs {
+    /// Compose shared R2 arguments into this struct.
+    #[command(flatten)]
+    pub r2: R2Args,
+
+    /// Object key in R2 to download.
+    #[arg(value_name = "KEY")]
+    pub key: String,
+
+    /// Local destination path. Defaults to the key's filename.
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+
+    /// Overwrite the destination if it already exists.
+    #[arg(long)]
+    pub force: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,7 +132,7 @@ mod tests {
         ])
         .expect("parse should succeed");
 
-        // We use a 'let-else' statement here, a concise way to unwrap enum variants 
+        // We use a 'let-else' statement here, a concise way to unwrap enum variants
         // while providing a fallback (panic in this case).
         let Commands::Upload(args) = cli.command else {
             panic!("expected upload");
@@ -146,6 +167,33 @@ mod tests {
         assert_eq!(args.r2.bucket, "my-bucket");
         assert_eq!(args.prefix, Some("images/".to_string()));
         assert!(args.long);
+    }
+
+    #[test]
+    fn parses_download_with_output() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "download",
+            "images/photo.jpg",
+            "--bucket",
+            "my-bucket",
+            "--output",
+            "./local.jpg",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+            "--account-id",
+            "acc123",
+        ])
+        .expect("parse should succeed");
+
+        let Commands::Download(args) = cli.command else {
+            panic!("expected download");
+        };
+        assert_eq!(args.key, "images/photo.jpg");
+        assert_eq!(args.output, Some(PathBuf::from("./local.jpg")));
+        assert_eq!(args.r2.bucket, "my-bucket");
     }
 
     #[test]

@@ -1,7 +1,7 @@
-use crate::cli::{ListArgs, R2Args, UploadArgs};
+use crate::cli::{DownloadArgs, ListArgs, R2Args, UploadArgs};
 use anyhow::{Context, bail};
 use aws_sdk_s3::primitives::ByteStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Entry point for the upload command.
 pub async fn run_upload(args: UploadArgs, verbose: bool) -> anyhow::Result<()> {
@@ -35,7 +35,7 @@ pub async fn run_upload(args: UploadArgs, verbose: bool) -> anyhow::Result<()> {
 
     // Initialize the S3 client with Cloudflare R2 credentials.
     let client = build_client(&endpoint_url, &args.r2.access_key, &args.r2.secret_key).await;
-    
+
     // Perform the upload.
     upload(
         &client,
@@ -46,6 +46,105 @@ pub async fn run_upload(args: UploadArgs, verbose: bool) -> anyhow::Result<()> {
         verbose,
     )
     .await
+}
+
+/// Entry point for the download command.
+pub async fn run_download(args: DownloadArgs, verbose: bool) -> anyhow::Result<()> {
+    let key = args.key.trim();
+    if key.is_empty() {
+        bail!("object key must not be empty");
+    }
+    if key.ends_with('/') {
+        bail!("object key must identify a file, not a directory: {key}");
+    }
+
+    let output = derive_output_path(key, args.output)?;
+    if output.exists() && !args.force {
+        bail!(
+            "destination already exists: {}; use --force to overwrite",
+            output.display()
+        );
+    }
+
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+    }
+
+    let endpoint_url = endpoint_for(&args.r2)?;
+    if verbose {
+        eprintln!(
+            "Endpoint: {}\nBucket: {}\nKey: {}\nOutput: {}",
+            endpoint_url,
+            args.r2.bucket,
+            key,
+            output.display()
+        );
+    }
+
+    let client = build_client(&endpoint_url, &args.r2.access_key, &args.r2.secret_key).await;
+    download(&client, &args.r2.bucket, key, &output, verbose).await
+}
+
+/// Choose the requested output path or safely derive a local filename from the key.
+fn derive_output_path(key: &str, output: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    if let Some(output) = output {
+        return Ok(output);
+    }
+
+    Path::new(key)
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .map(PathBuf::from)
+        .context("object key does not contain a filename; provide --output")
+}
+
+/// Stream one R2 object to a local file.
+async fn download(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+    output: &Path,
+    verbose: bool,
+) -> anyhow::Result<()> {
+    let response = match client.get_object().bucket(bucket).key(key).send().await {
+        Ok(response) => response,
+        Err(aws_sdk_s3::error::SdkError::ServiceError(error)) if error.err().is_no_such_key() => {
+            bail!("object not found in s3://{bucket}/{key}");
+        }
+        Err(error) => {
+            return Err(error).context(
+                "get_object failed — check bucket, key, credentials, endpoint and network",
+            );
+        }
+    };
+
+    // Convert the SDK body into an async reader and copy it in chunks.
+    // This avoids loading the complete object into memory.
+    let mut body = response.body.into_async_read();
+    let mut file = tokio::fs::File::create(output)
+        .await
+        .with_context(|| format!("failed to create {}", output.display()))?;
+    tokio::io::copy(&mut body, &mut file)
+        .await
+        .with_context(|| format!("failed to write {}", output.display()))?;
+
+    if verbose {
+        let length = tokio::fs::metadata(output)
+            .await
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        eprintln!(
+            "Downloaded s3://{bucket}/{key} -> {} ({} bytes)",
+            output.display(),
+            length
+        );
+    }
+    println!("Downloaded s3://{bucket}/{key} to {}", output.display());
+    Ok(())
 }
 
 /// Entry point for the list command.
@@ -64,7 +163,7 @@ pub async fn run_list(args: ListArgs, verbose: bool) -> anyhow::Result<()> {
     }
 
     let client = build_client(&endpoint_url, &args.r2.access_key, &args.r2.secret_key).await;
-    
+
     // Perform the object listing.
     list_objects(
         &client,
@@ -78,7 +177,7 @@ pub async fn run_list(args: ListArgs, verbose: bool) -> anyhow::Result<()> {
 
 /// Helper to determine the R2 endpoint URL.
 fn endpoint_for(args: &R2Args) -> anyhow::Result<String> {
-    // .context() from anyhow allows us to wrap lower-level errors 
+    // .context() from anyhow allows us to wrap lower-level errors
     // with higher-level explanations.
     derive_endpoint(args.endpoint.as_deref(), args.account_id.as_deref())
         .context("must provide --endpoint / R2_ENDPOINT or --account-id / R2_ACCOUNT_ID")
@@ -141,10 +240,13 @@ async fn upload(
     verbose: bool,
 ) -> anyhow::Result<()> {
     // mime_guess helps us set the correct Content-Type based on the file extension.
-    let content_type =
-        content_type.or_else(|| mime_guess::from_path(file).first().map(|mime| mime.to_string()));
-    
-    // ByteStream::from_path reads the file asynchronously and streams it 
+    let content_type = content_type.or_else(|| {
+        mime_guess::from_path(file)
+            .first()
+            .map(|mime| mime.to_string())
+    });
+
+    // ByteStream::from_path reads the file asynchronously and streams it
     // to the network, preventing the need to load the whole file into RAM.
     let body = ByteStream::from_path(file)
         .await
@@ -161,7 +263,9 @@ async fn upload(
             length,
             bucket,
             key,
-            content_type.as_deref().unwrap_or("application/octet-stream")
+            content_type
+                .as_deref()
+                .unwrap_or("application/octet-stream")
         );
     }
 
@@ -209,7 +313,7 @@ async fn list_objects(
             .context("list_objects failed — check bucket, credentials, endpoint and network")?;
 
         let contents = response.contents();
-        
+
         // If the first page is empty, we let the user know in verbose mode.
         if first_page && contents.is_empty() && verbose {
             if let Some(prefix) = prefix {
@@ -247,7 +351,7 @@ async fn list_objects(
 
         // Retrieve the token for the next page.
         continuation_token = response.next_continuation_token().map(str::to_owned);
-        
+
         // Fail if the API says more results exist but provides no way to get them.
         if continuation_token.is_none() {
             bail!("R2 returned a truncated object list without a continuation token");
@@ -289,5 +393,22 @@ mod tests {
     #[test]
     fn derives_key_from_file_name() {
         assert_eq!(derive_key(Path::new("a/b/photo.jpg")), "photo.jpg");
+    }
+
+    #[test]
+    fn derives_output_path_from_key() {
+        assert_eq!(
+            derive_output_path("images/photo.jpg", None).unwrap(),
+            PathBuf::from("photo.jpg")
+        );
+    }
+
+    #[test]
+    fn preserves_explicit_output_path() {
+        let output = PathBuf::from("downloads/photo.jpg");
+        assert_eq!(
+            derive_output_path("images/photo.jpg", Some(output.clone())).unwrap(),
+            output
+        );
     }
 }

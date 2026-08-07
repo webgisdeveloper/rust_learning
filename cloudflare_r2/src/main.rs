@@ -10,18 +10,19 @@ use cli::{Cli, Commands};
 #[tokio::main]
 async fn main() -> Result<()> {
     // dotenvy::dotenv() looks for a .env file in the current directory
-    // and loads its contents into environment variables. 
+    // and loads its contents into environment variables.
     // .ok() converts the Result to Option, ignoring errors if the file is missing.
     let _ = dotenvy::dotenv();
 
     // Parse command line arguments into the Cli struct defined in cli.rs
     let cli = Cli::parse();
 
-    // match is a powerful Rust control flow operator that ensures 
+    // match is a powerful Rust control flow operator that ensures
     // we handle every possible variant of the Commands enum.
     match cli.command {
         // Dispatch to the specific logic in r2.rs based on the subcommand chosen.
         Commands::Upload(args) => r2::run_upload(args, cli.verbose).await,
         Commands::List(args) => r2::run_list(args, cli.verbose).await,
+        Commands::Download(args) => r2::run_download(args, cli.verbose).await,
     }
 }

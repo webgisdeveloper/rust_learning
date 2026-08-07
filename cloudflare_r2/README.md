@@ -1,11 +1,12 @@
 # Cloudflare R2 CLI
 
-A Rust command line tool to upload and list files on Cloudflare R2 (S3-compatible API). Uses `aws-sdk-s3` with `aws-config` (Cloudflare's recommended Rust path) and streams via `ByteStream::from_path`.
+A Rust command line tool to upload, list and download files on Cloudflare R2 (S3-compatible API). Uses `aws-sdk-s3` with `aws-config` (Cloudflare's recommended Rust path) and streams via `ByteStream::from_path`.
 
 ## Features
 
 - `upload` subcommand: Upload a local file to R2.
 - `list` subcommand: Enumerate objects in a bucket (supports pagination, prefixes, and detailed output).
+- `download` subcommand: Stream an object to a local file without loading it entirely into memory.
 - Credentials via env vars or flags (flags override env).
 - Endpoint auto-derived from `R2_ACCOUNT_ID` → `https://{account_id}.r2.cloudflarestorage.com` or explicit `R2_ENDPOINT`.
 - Content-Type auto-detected via `mime_guess` for uploads, overridable with `--content-type`.
@@ -66,6 +67,21 @@ cloudflare_r2 list --bucket $R2_BUCKET --long
 cloudflare_r2 list --bucket $R2_BUCKET --prefix images/ --long --verbose
 ```
 
+### Download
+
+```bash
+# Download to the filename from the object key: ./README.md
+cloudflare_r2 download test/README.md --bucket $R2_BUCKET
+
+# Download to a specific path, creating parent directories when needed
+cloudflare_r2 download images/photo.jpg --bucket $R2_BUCKET --output ./downloads/photo.jpg
+
+# Overwrite an existing local file
+cloudflare_r2 download images/photo.jpg --bucket $R2_BUCKET --output ./photo.jpg --force --verbose
+```
+
+Without `--output`, the destination uses the filename portion of the object key. Existing files are protected by default; use `--force` to overwrite them.
+
 ### Global Options
 
 - `-v, --verbose`: Enable verbose logging of endpoints, buckets, and counts.
@@ -90,15 +106,18 @@ cargo clippy -- -D warnings
 cargo fmt --check
 cargo test
 
-# Real R2 test: upload then list
+# Real R2 test: upload, list, then download
 cargo run -- upload ./README.md --bucket $R2_BUCKET --key test/README.md --verbose
 cargo run -- list --bucket $R2_BUCKET --prefix test/ --long --verbose
+cargo run -- download test/README.md --bucket $R2_BUCKET --output /tmp/README.out --force --verbose
+diff README.md /tmp/README.out
 ```
 
 ## Error Handling
 
 - Missing file (upload) → `Error: file not found: ...` exit 1
 - Directory (upload) → `Error: not a file: ... (directories not supported)` exit 1
+- Missing object (download) → `Error: object not found in s3://<bucket>/<key>` exit 1
 - No subcommand → help exit 2
 - Missing required args → clap error exit 2
 - Bad creds / wrong endpoint / network → `... failed — check bucket, credentials, endpoint and network` with SDK cause, exit 1
