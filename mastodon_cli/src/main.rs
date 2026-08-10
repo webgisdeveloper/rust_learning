@@ -239,9 +239,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if statuses.is_empty() {
             println!("No recent statuses found.");
         } else {
-            println!("Recent {} statuses:", args.list);
+            println!("Recent {} statuses:\n", args.list);
             for (i, status) in statuses.iter().enumerate() {
-                println!("{}", format_status(i, status));
+                println!("{}\n", format_status(i, status));
             }
         }
     }
@@ -250,11 +250,99 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Formats a status for display, including reply and image indicators.
+/// Wraps text to a maximum line width, preserving word boundaries where possible.
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for raw_line in text.lines() {
+        let trimmed = raw_line.trim_end();
+        if trimmed.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut current_line = String::new();
+        let mut current_width = 0;
+
+        for word in trimmed.split_whitespace() {
+            let word_len = word.chars().count();
+            if current_line.is_empty() {
+                if word_len > max_width {
+                    lines.push(word.to_string());
+                } else {
+                    current_line.push_str(word);
+                    current_width = word_len;
+                }
+            } else if current_width + 1 + word_len <= max_width {
+                current_line.push(' ');
+                current_line.push_str(word);
+                current_width += 1 + word_len;
+            } else {
+                lines.push(current_line);
+                current_line = word.to_string();
+                current_width = word_len;
+            }
+        }
+        if !current_line.is_empty() {
+            lines.push(current_line);
+        }
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// Formats a status for display inside a clean Unicode text box.
 fn format_status(index: usize, status: &Status) -> String {
-    let image_indicator = if !status.media_attachments.is_empty() { " 🖼️" } else { "" };
-    let reply_indicator = if status.in_reply_to_id.is_some() { "🧵 " } else { "" };
-    format!("{}. {}{}{}", index + 1, reply_indicator, clean_html(&status.content), image_indicator)
+    let box_width = 76;
+    let inner_width = box_width - 4; // 2 chars for border and space on left and right ("│ " ... " │")
+
+    let mut output = String::new();
+
+    // 1. Top border with header title
+    let header_title = format!(" Status #{} ", index + 1);
+    let title_len = header_title.chars().count();
+    let remaining_border = if box_width >= title_len + 4 {
+        box_width - 4 - title_len
+    } else {
+        0
+    };
+    output.push_str(&format!("┌──{}{}\n", header_title, format!("{}┐", "─".repeat(remaining_border))));
+
+    // 2. Metadata indicators (reply / image attachments)
+    let has_reply = status.in_reply_to_id.is_some();
+    let has_image = !status.media_attachments.is_empty();
+
+    if has_reply || has_image {
+        let mut indicators = Vec::new();
+        if has_reply {
+            indicators.push("🧵 Reply");
+        }
+        if has_image {
+            indicators.push("🖼️ Attachment");
+        }
+        let indicator_str = indicators.join("  ");
+        let char_count = indicator_str.chars().count();
+        let padding = inner_width.saturating_sub(char_count);
+        output.push_str(&format!("│ {}{} │\n", indicator_str, " ".repeat(padding)));
+        output.push_str(&format!("├{}┤\n", "─".repeat(box_width - 2)));
+    }
+
+    // 3. Clean HTML and replace shortcode emojis in content
+    let cleaned = clean_html(&status.content);
+    let content = replace_emojis(&cleaned);
+
+    // 4. Wrap content and format into padded lines
+    let wrapped_lines = wrap_text(&content, inner_width);
+    for line in wrapped_lines {
+        let char_count = line.chars().count();
+        let padding = inner_width.saturating_sub(char_count);
+        output.push_str(&format!("│ {}{} │\n", line, " ".repeat(padding)));
+    }
+
+    // 5. Bottom border
+    output.push_str(&format!("└{}┘", "─".repeat(box_width - 2)));
+
+    output
 }
 
 #[cfg(test)]
@@ -280,13 +368,23 @@ mod tests {
     }
 
     #[test]
+    fn wraps_text_at_word_boundaries() {
+        let text = "The quick brown fox jumps over the lazy dog";
+        let wrapped = wrap_text(text, 20);
+        assert_eq!(wrapped, vec!["The quick brown fox", "jumps over the lazy", "dog"]);
+    }
+
+    #[test]
     fn formats_regular_status_correctly() {
         let status = Status {
             content: "Hello world!".to_string(),
             media_attachments: vec![],
             in_reply_to_id: None,
         };
-        assert_eq!(format_status(0, &status), "1. Hello world!");
+        let formatted = format_status(0, &status);
+        assert!(formatted.starts_with("┌── Status #1 "));
+        assert!(formatted.contains("Hello world!"));
+        assert!(formatted.contains("└"));
     }
 
     #[test]
@@ -296,8 +394,12 @@ mod tests {
             media_attachments: vec![],
             in_reply_to_id: Some("123".to_string()),
         };
-        assert_eq!(format_status(0, &status), "1. 🧵 Replying to you!");
+        let formatted = format_status(0, &status);
+        assert!(formatted.contains("🧵 Reply"));
+        assert!(formatted.contains("├"));
+        assert!(formatted.contains("Replying to you!"));
     }
+
 
     #[test]
     fn formats_status_with_image_correctly() {
@@ -306,7 +408,9 @@ mod tests {
             media_attachments: vec![MediaAttachment {}],
             in_reply_to_id: None,
         };
-        assert_eq!(format_status(0, &status), "1. Check this out! 🖼️");
+        let formatted = format_status(0, &status);
+        assert!(formatted.contains("🖼️ Attachment"));
+        assert!(formatted.contains("Check this out!"));
     }
 
     #[test]
@@ -316,7 +420,9 @@ mod tests {
             media_attachments: vec![MediaAttachment {}],
             in_reply_to_id: Some("456".to_string()),
         };
-        assert_eq!(format_status(0, &status), "1. 🧵 Replying with image! 🖼️");
+        let formatted = format_status(0, &status);
+        assert!(formatted.contains("🧵 Reply  🖼️ Attachment"));
+        assert!(formatted.contains("Replying with image!"));
     }
 
     #[test]
@@ -326,6 +432,10 @@ mod tests {
             media_attachments: vec![],
             in_reply_to_id: None,
         };
-        assert_eq!(format_status(0, &status), "1. Bold text");
+        let formatted = format_status(0, &status);
+        assert!(formatted.contains("Bold text"));
     }
 }
+
+
+
