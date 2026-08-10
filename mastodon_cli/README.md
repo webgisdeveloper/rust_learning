@@ -8,6 +8,7 @@ A simple Rust-based command-line interface (CLI) tool to post status updates to 
 - Handle asynchronous HTTP requests with `reqwest` and `tokio`.
 - Serialize data to JSON using `serde`.
 - Support for both command-line flags and environment variables for authentication.
+- Configurable Mastodon instances via `--instance` or `MASTODON_INSTANCE`.
 - Automatic replacement of emoji shortcodes (e.g., :apple: -> 🍎) using the comprehensive `emojis` crate.
 - Cleans HTML tags and decodes entities from fetched statuses for a clean CLI output.
 
@@ -36,6 +37,9 @@ To avoid passing your access token every time, you can set it as an environment 
 
 ```bash
 export MASTODON_TOKEN=your_access_token_here
+
+# Optional: use a different Mastodon instance
+export MASTODON_INSTANCE=https://mastodon.social
 ```
 
 ## Usage
@@ -60,8 +64,16 @@ cargo run -- --message "I am eating an :apple: :smile:" --token your_access_toke
 - `-m, --message <TEXT>`: The status message to post (Optional).
 - `-i, --image <PATH>`: Path to an image to upload with the message (Optional).
 - `-t, --token <TOKEN>`: The Mastodon API access token (Optional if `MASTODON_TOKEN` is set).
+- `--instance <URL>`: Mastodon instance URL (defaults to `https://mastodon.social`; `MASTODON_INSTANCE` is also supported).
 - `-h, --help`: Print help message.
 - `-V, --version`: Print version information.
+
+## Project Structure
+
+- `src/main.rs`: Application flow, configuration resolution, and command execution.
+- `src/cli.rs`: `clap` argument definitions.
+- `src/api.rs`: Mastodon API models, URL construction, and media upload.
+- `src/format.rs`: HTML cleanup, emoji replacement, text wrapping, and status rendering.
 
 ## Technical Overview
 

@@ -7,7 +7,7 @@
 
 ## Authentication & API
 - **Token**: Priority is `--token` flag $\rightarrow$ `MASTODON_TOKEN` environment variable.
-- **API Endpoint**: `https://mastodon.social`
+- **API Endpoint**: Defaults to `https://mastodon.social`; override with `--instance` or `MASTODON_INSTANCE`.
 - **Scope Gotcha**: Fetching recent statuses requires `read:accounts` and `read:statuses` scopes. Posting requires `write:statuses`.
 
 ## Key Logic
