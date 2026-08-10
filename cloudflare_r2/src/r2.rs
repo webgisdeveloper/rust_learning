@@ -1,4 +1,4 @@
-use crate::cli::{DeleteArgs, DownloadArgs, ListArgs, R2Args, UploadArgs};
+use crate::cli::{DeleteArgs, DownloadArgs, ListArgs, R2Args, StatArgs, UploadArgs};
 use anyhow::{Context, bail};
 use aws_sdk_s3::primitives::ByteStream;
 use std::path::{Path, PathBuf};
@@ -140,6 +140,36 @@ async fn delete(
         eprintln!("Deleted s3://{bucket}/{key}");
     }
     println!("Deleted s3://{bucket}/{key}");
+    Ok(())
+}
+
+/// Entry point for the stat command.
+pub async fn run_stat(args: StatArgs, verbose: bool) -> anyhow::Result<()> {
+    let key = args.key.trim();
+    if key.is_empty() {
+        bail!("object key must not be empty");
+    }
+
+    let endpoint_url = endpoint_for(&args.r2)?;
+    if verbose {
+        eprintln!(
+            "Endpoint: {}\nBucket: {}\nKey: {}",
+            endpoint_url, args.r2.bucket, key
+        );
+    }
+
+    let client = build_client(&endpoint_url, &args.r2.access_key, &args.r2.secret_key).await;
+    let info = head_stat(&client, &args.r2.bucket, key).await?;
+
+    if args.json {
+        println!("{}", format_stat_json(&info));
+    } else {
+        println!("{}", format_stat_human(&info));
+    }
+
+    if verbose {
+        eprintln!("Stat s3://{}/{}", args.r2.bucket, key);
+    }
     Ok(())
 }
 
@@ -364,32 +394,178 @@ async fn upload(
     Ok(())
 }
 
+/// Full metadata for a single R2 object (used by `stat`).
+#[derive(Debug, Clone)]
+struct StatInfo {
+    key: String,
+    bucket: String,
+    size: i64,
+    last_modified: Option<aws_smithy_types::DateTime>,
+    etag: Option<String>,
+    content_type: Option<String>,
+    content_encoding: Option<String>,
+    storage_class: Option<String>,
+    host: String,
+    description: String,
+    metadata: std::collections::HashMap<String, String>,
+}
+
+/// Escape a string for JSON output without external dependencies.
+fn escape_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Format a `StatInfo` as human-readable aligned text.
+fn format_stat_human(info: &StatInfo) -> String {
+    let last_modified = info
+        .last_modified
+        .as_ref()
+        .map(format_date)
+        .unwrap_or_else(|| "-".to_string());
+    let etag = info.etag.as_deref().unwrap_or("-");
+    let content_type = info.content_type.as_deref().unwrap_or("-");
+    let content_encoding = info.content_encoding.as_deref().unwrap_or("-");
+    let storage_class = info.storage_class.as_deref().unwrap_or("-");
+
+    let mut out = format!(
+        "Key:            {}\nBucket:         {}\nSize:           {} bytes\nLast-Modified:  {}\nETag:           {}\nContent-Type:   {}\nContent-Encoding: {}\nStorage-Class:  {}\nHost:           {}\nDescription:    {}",
+        info.key,
+        info.bucket,
+        info.size,
+        last_modified,
+        etag,
+        content_type,
+        content_encoding,
+        storage_class,
+        info.host,
+        info.description
+    );
+
+    // Show extra user metadata beyond host/description if present.
+    let extra: Vec<_> = info
+        .metadata
+        .iter()
+        .filter(|(k, _)| *k != "host" && *k != "description")
+        .collect();
+    if !extra.is_empty() {
+        out.push_str("\nMetadata:");
+        for (k, v) in extra {
+            out.push_str(&format!("\n  {k}: {v}"));
+        }
+    }
+    out
+}
+
+/// Format a `StatInfo` as single-line JSON.
+fn format_stat_json(info: &StatInfo) -> String {
+    let last_modified = info
+        .last_modified
+        .as_ref()
+        .and_then(|d| d.fmt(aws_smithy_types::date_time::Format::DateTime).ok())
+        .unwrap_or_else(|| "-".to_string());
+    let etag = info.etag.as_deref().unwrap_or("-");
+    let content_type = info.content_type.as_deref().unwrap_or("-");
+    let content_encoding = info.content_encoding.as_deref().unwrap_or("-");
+    let storage_class = info.storage_class.as_deref().unwrap_or("-");
+
+    // Build metadata JSON object string.
+    let mut meta_parts = Vec::new();
+    for (k, v) in &info.metadata {
+        meta_parts.push(format!("\"{}\":\"{}\"", escape_json(k), escape_json(v)));
+    }
+    let metadata_json = format!("{{{}}}", meta_parts.join(","));
+
+    format!(
+        "{{\"key\":\"{}\",\"bucket\":\"{}\",\"size\":{},\"lastModified\":\"{}\",\"eTag\":\"{}\",\"contentType\":\"{}\",\"contentEncoding\":\"{}\",\"storageClass\":\"{}\",\"host\":\"{}\",\"description\":\"{}\",\"metadata\":{}}}",
+        escape_json(&info.key),
+        escape_json(&info.bucket),
+        info.size,
+        escape_json(&last_modified),
+        escape_json(etag),
+        escape_json(content_type),
+        escape_json(content_encoding),
+        escape_json(storage_class),
+        escape_json(&info.host),
+        escape_json(&info.description),
+        metadata_json
+    )
+}
+
+/// Perform HeadObject and map into `StatInfo`. Handles both NotFound and NoSuchKey.
+async fn head_stat(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+) -> anyhow::Result<StatInfo> {
+    let res = match client.head_object().bucket(bucket).key(key).send().await {
+        Ok(res) => res,
+        Err(aws_sdk_s3::error::SdkError::ServiceError(err)) if err.err().is_not_found() => {
+            bail!("file not found: s3://{bucket}/{key}");
+        }
+        Err(err) => {
+            return Err(err).context(
+                "head_object failed — check bucket, key, credentials, endpoint and network",
+            );
+        }
+    };
+
+    let size = res.content_length().unwrap_or(0);
+    let last_modified = res.last_modified().cloned();
+    let etag = res.e_tag().map(|s| s.to_string());
+    let content_type = res.content_type().map(|s| s.to_string());
+    let content_encoding = res.content_encoding().map(|s| s.to_string());
+    let storage_class = res.storage_class().map(|s| s.as_str().to_string());
+
+    let meta_map = res.metadata().cloned().unwrap_or_default();
+    let host = meta_map
+        .get("host")
+        .cloned()
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| "-".to_string());
+    let description = meta_map
+        .get("description")
+        .cloned()
+        .filter(|d| !d.trim().is_empty())
+        .unwrap_or_else(|| "-".to_string());
+
+    Ok(StatInfo {
+        key: key.to_string(),
+        bucket: bucket.to_string(),
+        size,
+        last_modified,
+        etag,
+        content_type,
+        content_encoding,
+        storage_class,
+        host,
+        description,
+        metadata: meta_map,
+    })
+}
+
 /// Attempts to fetch the `host` and `description` user metadata fields for a given object using HeadObject.
+/// Delegates to `head_stat` to avoid duplication; returns "-" pair on any failure.
 async fn fetch_object_metadata(
     client: &aws_sdk_s3::Client,
     bucket: &str,
     key: &str,
 ) -> (String, String) {
-    client
-        .head_object()
-        .bucket(bucket)
-        .key(key)
-        .send()
+    head_stat(client, bucket, key)
         .await
-        .ok()
-        .map(|res| {
-            let meta = res.metadata();
-            let host = meta
-                .and_then(|m| m.get("host").cloned())
-                .filter(|h| !h.trim().is_empty())
-                .unwrap_or_else(|| "-".to_string());
-            let description = meta
-                .and_then(|m| m.get("description").cloned())
-                .filter(|d| !d.trim().is_empty())
-                .unwrap_or_else(|| "-".to_string());
-            (host, description)
-        })
-        .unwrap_or_else(|| ("-".to_string(), "-".to_string()))
+        .map(|info| (info.host, info.description))
+        .unwrap_or_else(|_| ("-".to_string(), "-".to_string()))
 }
 
 /// Formats a DateTime into a clean, human-readable string (YYYY-MM-DD HH:MM:SS).
@@ -640,5 +816,97 @@ mod tests {
         assert!(lines[0].contains("LAST_MODIFIED"));
         assert!(lines[0].contains("HOST"));
         assert!(lines[0].contains("DESCRIPTION"));
+    }
+
+    #[test]
+    fn escapes_json_special_chars() {
+        assert_eq!(escape_json("a\"b"), "a\\\"b");
+        assert_eq!(escape_json("a\\b"), "a\\\\b");
+        assert_eq!(escape_json("a\nb"), "a\\nb");
+        assert_eq!(escape_json("a\tb"), "a\\tb");
+    }
+
+    #[test]
+    fn formats_stat_human_contains_labels() {
+        let info = StatInfo {
+            key: "images/photo.jpg".to_string(),
+            bucket: "my-bucket".to_string(),
+            size: 89201,
+            last_modified: Some(aws_smithy_types::DateTime::from_secs_and_nanos(
+                1786121765,
+                613_000_000,
+            )),
+            etag: Some("\"abc123\"".to_string()),
+            content_type: Some("image/jpeg".to_string()),
+            content_encoding: None,
+            storage_class: Some("STANDARD".to_string()),
+            host: "my-host".to_string(),
+            description: "Vacation".to_string(),
+            metadata: std::collections::HashMap::new(),
+        };
+        let out = format_stat_human(&info);
+        assert!(out.contains("Key:"));
+        assert!(out.contains("images/photo.jpg"));
+        assert!(out.contains("Bucket:"));
+        assert!(out.contains("my-bucket"));
+        assert!(out.contains("89201 bytes"));
+        assert!(out.contains("2026-08-07 16:56:05"));
+        assert!(out.contains("Host:"));
+        assert!(out.contains("my-host"));
+        assert!(out.contains("Description:"));
+        assert!(out.contains("Vacation"));
+    }
+
+    #[test]
+    fn formats_stat_json_roundtrip() {
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("host".to_string(), "my-host".to_string());
+        meta.insert("description".to_string(), "A \"quoted\" desc".to_string());
+        let info = StatInfo {
+            key: "images/photo.jpg".to_string(),
+            bucket: "my-bucket".to_string(),
+            size: 1234,
+            last_modified: None,
+            etag: None,
+            content_type: Some("image/jpeg".to_string()),
+            content_encoding: None,
+            storage_class: None,
+            host: "my-host".to_string(),
+            description: "A \"quoted\" desc".to_string(),
+            metadata: meta,
+        };
+        let json = format_stat_json(&info);
+        assert!(json.contains("\"key\":\"images/photo.jpg\""));
+        assert!(json.contains("\"size\":1234"));
+        assert!(json.contains("\"host\":\"my-host\""));
+        // Ensure quotes are escaped
+        assert!(json.contains("A \\\"quoted\\\" desc"));
+        // Must be valid-ish: starts with { ends with }
+        assert!(json.starts_with('{'));
+        assert!(json.ends_with('}'));
+    }
+
+    #[test]
+    fn formats_stat_human_shows_extra_metadata() {
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("host".to_string(), "h".to_string());
+        meta.insert("description".to_string(), "d".to_string());
+        meta.insert("custom".to_string(), "val".to_string());
+        let info = StatInfo {
+            key: "k".to_string(),
+            bucket: "b".to_string(),
+            size: 0,
+            last_modified: None,
+            etag: None,
+            content_type: None,
+            content_encoding: None,
+            storage_class: None,
+            host: "h".to_string(),
+            description: "d".to_string(),
+            metadata: meta,
+        };
+        let out = format_stat_human(&info);
+        assert!(out.contains("Metadata:"));
+        assert!(out.contains("custom: val"));
     }
 }

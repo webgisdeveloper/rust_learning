@@ -25,5 +25,6 @@ async fn main() -> Result<()> {
         Commands::List(args) => r2::run_list(args, cli.verbose).await,
         Commands::Download(args) => r2::run_download(args, cli.verbose).await,
         Commands::Delete(args) => r2::run_delete(args, cli.verbose).await,
+        Commands::Stat(args) => r2::run_stat(args, cli.verbose).await,
     }
 }

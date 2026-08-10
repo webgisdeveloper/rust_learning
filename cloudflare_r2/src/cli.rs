@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[command(
     name = "cloudflare-r2",
     version,
-    about = "Upload, list and download files on Cloudflare R2",
+    about = "Upload, list, download, delete and stat files on Cloudflare R2",
     arg_required_else_help = true // If no subcommand is provided, show help automatically.
 )]
 pub struct Cli {
@@ -31,6 +31,9 @@ pub enum Commands {
     Download(DownloadArgs),
     /// Delete an object from a bucket
     Delete(DeleteArgs),
+    /// Show metadata for a single object (aliases: head, info)
+    #[command(alias = "head", alias = "info")]
+    Stat(StatArgs),
 }
 
 /// Shared arguments used by Upload, List and Download.
@@ -126,6 +129,21 @@ pub struct DeleteArgs {
     /// Object key in R2 to delete.
     #[arg(value_name = "KEY")]
     pub key: String,
+}
+
+#[derive(Args, Debug)]
+pub struct StatArgs {
+    /// Compose shared R2 arguments into this struct.
+    #[command(flatten)]
+    pub r2: R2Args,
+
+    /// Object key in R2 to inspect.
+    #[arg(value_name = "KEY")]
+    pub key: String,
+
+    /// Output machine-readable JSON instead of human-readable text.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[cfg(test)]
@@ -258,6 +276,99 @@ mod tests {
         };
         assert_eq!(args.key, "images/photo.jpg");
         assert_eq!(args.r2.bucket, "my-bucket");
+    }
+
+    #[test]
+    fn parses_stat() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "stat",
+            "images/photo.jpg",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+            "--account-id",
+            "acc123",
+        ])
+        .expect("parse should succeed");
+
+        let Commands::Stat(args) = cli.command else {
+            panic!("expected stat");
+        };
+        assert_eq!(args.key, "images/photo.jpg");
+        assert_eq!(args.r2.bucket, "my-bucket");
+        assert!(!args.json);
+    }
+
+    #[test]
+    fn parses_stat_json() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "stat",
+            "images/photo.jpg",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+            "--json",
+        ])
+        .expect("parse should succeed");
+
+        let Commands::Stat(args) = cli.command else {
+            panic!("expected stat");
+        };
+        assert!(args.json);
+    }
+
+    #[test]
+    fn parses_stat_alias_head() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "head",
+            "images/photo.jpg",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+            "--account-id",
+            "acc123",
+        ])
+        .expect("parse should succeed");
+
+        let Commands::Stat(args) = cli.command else {
+            panic!("expected stat via head alias");
+        };
+        assert_eq!(args.key, "images/photo.jpg");
+    }
+
+    #[test]
+    fn parses_stat_alias_info() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "info",
+            "images/photo.jpg",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+            "--account-id",
+            "acc123",
+        ])
+        .expect("parse should succeed");
+
+        let Commands::Stat(args) = cli.command else {
+            panic!("expected stat via info alias");
+        };
+        assert_eq!(args.key, "images/photo.jpg");
     }
 
     #[test]
