@@ -27,6 +27,7 @@ use serde::{Serialize, Deserialize};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use regex::Regex;
 use std::sync::OnceLock;
+use unicode_width::UnicodeWidthStr;
 
 static EMOJI_RE: OnceLock<Regex> = OnceLock::new();
 
@@ -263,7 +264,7 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
         let mut current_width = 0;
 
         for word in trimmed.split_whitespace() {
-            let word_len = word.chars().count();
+            let word_len = UnicodeWidthStr::width(word);
             if current_line.is_empty() {
                 if word_len > max_width {
                     lines.push(word.to_string());
@@ -300,7 +301,7 @@ fn format_status(index: usize, status: &Status) -> String {
 
     // 1. Top border with header title
     let header_title = format!(" Status #{} ", index + 1);
-    let title_len = header_title.chars().count();
+    let title_len = UnicodeWidthStr::width(header_title.as_str());
     let remaining_border = if box_width >= title_len + 4 {
         box_width - 4 - title_len
     } else {
@@ -321,7 +322,7 @@ fn format_status(index: usize, status: &Status) -> String {
             indicators.push("🖼️ Attachment");
         }
         let indicator_str = indicators.join("  ");
-        let char_count = indicator_str.chars().count();
+        let char_count = UnicodeWidthStr::width(indicator_str.as_str());
         let padding = inner_width.saturating_sub(char_count);
         output.push_str(&format!("│ {}{} │\n", indicator_str, " ".repeat(padding)));
         output.push_str(&format!("├{}┤\n", "─".repeat(box_width - 2)));
@@ -334,7 +335,7 @@ fn format_status(index: usize, status: &Status) -> String {
     // 4. Wrap content and format into padded lines
     let wrapped_lines = wrap_text(&content, inner_width);
     for line in wrapped_lines {
-        let char_count = line.chars().count();
+        let char_count = UnicodeWidthStr::width(line.as_str());
         let padding = inner_width.saturating_sub(char_count);
         output.push_str(&format!("│ {}{} │\n", line, " ".repeat(padding)));
     }
