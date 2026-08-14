@@ -12,7 +12,7 @@ use ratatui::{
 };
 
 pub const MAP_W: usize = 80;
-pub const MAP_H: usize = 40;
+pub const MAP_H: usize = 20;
 
 pub fn render_ascii_world_map(lat: f64, lon: f64, resolved: Option<&GeoResult>) {
     // Header without coordinate numbers - only location name
