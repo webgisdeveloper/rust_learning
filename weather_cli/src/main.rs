@@ -94,9 +94,9 @@ struct Args {
     #[arg(long, env = "OPENWEATHER_API_KEY", hide_env_values = true)]
     api_key: Option<String>,
 
-    /// Disable ASCII world map rendering
+    /// Show ASCII world map (80×40 box, * for land, . for sea, ★ marks location) – off by default
     #[arg(long)]
-    no_map: bool,
+    map: bool,
 }
 
 // ---------- API helpers ----------
@@ -365,7 +365,7 @@ fn main() {
     // 1) Direct coordinate mode – most precise, no ambiguity
     if let (Some(lat), Some(lon)) = (args.lat, args.lon) {
         match get_weather_by_coords(lat, lon, &api_key) {
-            Ok(info) => display_weather_info(&info, None, !args.no_map),
+            Ok(info) => display_weather_info(&info, None, args.map),
             Err(e) => {
                 eprintln!("{} {}", "Error fetching weather data:".red(), e);
                 std::process::exit(1);
@@ -383,7 +383,7 @@ fn main() {
                     return;
                 }
                 match get_weather_by_coords(loc.lat, loc.lon, &api_key) {
-                    Ok(info) => display_weather_info(&info, Some(&loc), !args.no_map),
+                    Ok(info) => display_weather_info(&info, Some(&loc), args.map),
                     Err(e) => {
                         eprintln!("{} {}", "Error fetching weather data:".red(), e);
                         std::process::exit(1);
@@ -514,7 +514,7 @@ fn main() {
     for loc in targets {
         match get_weather_by_coords(loc.lat, loc.lon, &api_key) {
             Ok(info) => {
-                display_weather_info(&info, Some(loc), !args.no_map);
+                display_weather_info(&info, Some(loc), args.map);
                 if args.all {
                     println!("{}", "---".dimmed());
                 }
@@ -532,7 +532,7 @@ fn main() {
                 // Fallback to legacy q lookup for this loc
                 let cc = loc.country.clone();
                 if let Ok(fb) = get_weather_info(&loc.name, &cc, &api_key) {
-                    display_weather_info(&fb, Some(loc), !args.no_map);
+                    display_weather_info(&fb, Some(loc), args.map);
                 }
             }
         }
