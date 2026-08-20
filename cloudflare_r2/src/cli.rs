@@ -376,4 +376,22 @@ mod tests {
         let err = Cli::try_parse_from(["cloudflare_r2"]).unwrap_err();
         assert!(err.to_string().contains("Usage"));
     }
+
+    #[test]
+    fn rejects_stat_missing_key() {
+        let err = Cli::try_parse_from([
+            "cloudflare_r2",
+            "stat",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+            "--account-id",
+            "acc123",
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("required"));
+    }
 }

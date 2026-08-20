@@ -1,6 +1,6 @@
 # Cloudflare R2 CLI
 
-A Rust command line tool to upload, list and download files on Cloudflare R2 (S3-compatible API). Uses `aws-sdk-s3` with `aws-config` (Cloudflare's recommended Rust path) and streams via `ByteStream::from_path`.
+A Rust command line tool to upload, list, download, delete and stat files on Cloudflare R2 (S3-compatible API). Uses `aws-sdk-s3` with `aws-config` (Cloudflare's recommended Rust path) and streams via `ByteStream::from_path`.
 
 ## Features
 
@@ -8,6 +8,7 @@ A Rust command line tool to upload, list and download files on Cloudflare R2 (S3
 - `list` subcommand: Enumerate objects in a bucket (supports pagination, prefixes, and detailed output).
 - `download` subcommand: Stream an object to a local file without loading it entirely into memory.
 - `delete` subcommand: Delete an object from a bucket.
+- `stat` subcommand (aliases `head`, `info`): Show metadata for a single object via `HeadObject` without downloading (supports `--json` for scripting).
 - Credentials via env vars or flags (flags override env).
 - Endpoint auto-derived from `R2_ACCOUNT_ID` → `https://{account_id}.r2.cloudflarestorage.com` or explicit `R2_ENDPOINT`.
 - Content-Type auto-detected via `mime_guess` for uploads, overridable with `--content-type`.
@@ -95,6 +96,20 @@ Without `--output`, the destination uses the filename portion of the object key.
 cloudflare_r2 delete test/README.md --bucket $R2_BUCKET --verbose
 ```
 
+### Stat
+
+```bash
+# Show human-readable metadata for a single object
+cloudflare_r2 stat test/README.md --bucket $R2_BUCKET --verbose
+
+# Machine-readable JSON for scripting
+cloudflare_r2 stat images/photo.jpg --bucket $R2_BUCKET --json | jq .size
+
+# Aliases: head and info
+cloudflare_r2 head images/photo.jpg --bucket $R2_BUCKET
+cloudflare_r2 info images/photo.jpg --bucket $R2_BUCKET --json
+```
+
 ### Global Options
 
 - `-v, --verbose`: Enable verbose logging of endpoints, buckets, and counts.
@@ -132,6 +147,7 @@ diff README.md /tmp/README.out
 - Directory (upload) → `Error: not a file: ... (directories not supported)` exit 1
 - Missing object (download) → `Error: object not found in s3://<bucket>/<key>` exit 1
 - Missing object (delete) → `Error: file not found: s3://<bucket>/<key>` exit 1
+- Missing object (stat) → `Error: file not found: s3://<bucket>/<key>` exit 1
 - No subcommand → help exit 2
 - Missing required args → clap error exit 2
 - Bad creds / wrong endpoint / network → `... failed — check bucket, credentials, endpoint and network` with SDK cause, exit 1

@@ -110,6 +110,7 @@ pub async fn run_delete(args: DeleteArgs, verbose: bool) -> anyhow::Result<()> {
 }
 
 /// Deletes an object from R2.
+// Note: HeadObject 404 maps to is_not_found(); GetObject 404 maps to is_no_such_key() — intentional.
 async fn delete(
     client: &aws_sdk_s3::Client,
     bucket: &str,
@@ -187,6 +188,7 @@ fn derive_output_path(key: &str, output: Option<PathBuf>) -> anyhow::Result<Path
 }
 
 /// Stream one R2 object to a local file.
+// Note: GetObject 404 maps to is_no_such_key(); HeadObject 404 maps to is_not_found() — intentional.
 async fn download(
     client: &aws_sdk_s3::Client,
     bucket: &str,
@@ -503,7 +505,8 @@ fn format_stat_json(info: &StatInfo) -> String {
     )
 }
 
-/// Perform HeadObject and map into `StatInfo`. Handles both NotFound and NoSuchKey.
+/// Perform HeadObject and map into `StatInfo`. Handles NotFound (HeadObject only has is_not_found()).
+// Note: HeadObject 404 is is_not_found(); do not use is_no_such_key() here (GetObject only).
 async fn head_stat(
     client: &aws_sdk_s3::Client,
     bucket: &str,
@@ -908,5 +911,32 @@ mod tests {
         let out = format_stat_human(&info);
         assert!(out.contains("Metadata:"));
         assert!(out.contains("custom: val"));
+    }
+
+    #[test]
+    fn formats_stat_human_missing_fields() {
+        let info = StatInfo {
+            key: "k".to_string(),
+            bucket: "b".to_string(),
+            size: 0,
+            last_modified: None,
+            etag: None,
+            content_type: None,
+            content_encoding: None,
+            storage_class: None,
+            host: "-".to_string(),
+            description: "-".to_string(),
+            metadata: std::collections::HashMap::new(),
+        };
+        let out = format_stat_human(&info);
+        // All optional fields should render as "-"
+        assert!(out.contains("Last-Modified:  -"));
+        assert!(out.contains("ETag:           -"));
+        assert!(out.contains("Content-Type:   -"));
+        assert!(out.contains("Content-Encoding: -"));
+        assert!(out.contains("Storage-Class:  -"));
+        let json = format_stat_json(&info);
+        assert!(json.contains("\"lastModified\":\"-\""));
+        assert!(json.contains("\"eTag\":\"-\""));
     }
 }
