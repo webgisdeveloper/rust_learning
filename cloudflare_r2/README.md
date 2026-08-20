@@ -1,6 +1,6 @@
 # Cloudflare R2 CLI
 
-A Rust command line tool to upload, list, download, delete and stat files on Cloudflare R2 (S3-compatible API). Uses `aws-sdk-s3` with `aws-config` (Cloudflare's recommended Rust path) and streams via `ByteStream::from_path`.
+A Rust command line tool to upload, list, download, delete, stat and presign files on Cloudflare R2 (S3-compatible API). Uses `aws-sdk-s3` with `aws-config` (Cloudflare's recommended Rust path) and streams via `ByteStream::from_path`.
 
 ## Features
 
@@ -9,6 +9,7 @@ A Rust command line tool to upload, list, download, delete and stat files on Clo
 - `download` subcommand: Stream an object to a local file without loading it entirely into memory.
 - `delete` subcommand: Delete an object from a bucket.
 - `stat` subcommand (aliases `head`, `info`): Show metadata for a single object via `HeadObject` without downloading (supports `--json` for scripting).
+- `presign` subcommand: Generate SigV4 presigned URLs for GET or PUT without network I/O (supports `--expires`, `--method`, `--content-type`).
 - Credentials via env vars or flags (flags override env).
 - Endpoint auto-derived from `R2_ACCOUNT_ID` → `https://{account_id}.r2.cloudflarestorage.com` or explicit `R2_ENDPOINT`.
 - Content-Type auto-detected via `mime_guess` for uploads, overridable with `--content-type`.
@@ -110,6 +111,18 @@ cloudflare_r2 head images/photo.jpg --bucket $R2_BUCKET
 cloudflare_r2 info images/photo.jpg --bucket $R2_BUCKET --json
 ```
 
+### Presign
+
+```bash
+# GET (download) URL valid 1h
+cloudflare_r2 presign test/README.md --bucket $R2_BUCKET --expires 3600 --verbose
+curl "$(cloudflare_r2 presign test/README.md --bucket $R2_BUCKET)" -o /tmp/out
+
+# PUT (upload) URL valid 10m with content-type (browser-direct)
+cloudflare_r2 presign uploads/photo.jpg --method put --expires 600 --content-type image/jpeg --bucket $R2_BUCKET
+curl -X PUT --data-binary @photo.jpg -H "Content-Type: image/jpeg" "$(cloudflare_r2 presign uploads/photo.jpg --method put --expires 600 --content-type image/jpeg --bucket $R2_BUCKET)"
+```
+
 ### Global Options
 
 - `-v, --verbose`: Enable verbose logging of endpoints, buckets, and counts.
@@ -148,6 +161,8 @@ diff README.md /tmp/README.out
 - Missing object (download) → `Error: object not found in s3://<bucket>/<key>` exit 1
 - Missing object (delete) → `Error: file not found: s3://<bucket>/<key>` exit 1
 - Missing object (stat) → `Error: file not found: s3://<bucket>/<key>` exit 1
+- Invalid expires (presign) → clap error `invalid value '…' for '--expires <EXPIRES>'` exit 2 (must be 1..604800)
+- Invalid method (presign) → clap error `invalid value '…' for '--method <METHOD>'` exit 2 (get|put)
 - No subcommand → help exit 2
 - Missing required args → clap error exit 2
 - Bad creds / wrong endpoint / network → `... failed — check bucket, credentials, endpoint and network` with SDK cause, exit 1

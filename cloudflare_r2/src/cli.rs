@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[command(
     name = "cloudflare-r2",
     version,
-    about = "Upload, list, download, delete and stat files on Cloudflare R2",
+    about = "Upload, list, download, delete, stat and presign files on Cloudflare R2",
     arg_required_else_help = true // If no subcommand is provided, show help automatically.
 )]
 pub struct Cli {
@@ -34,6 +34,8 @@ pub enum Commands {
     /// Show metadata for a single object (aliases: head, info)
     #[command(alias = "head", alias = "info")]
     Stat(StatArgs),
+    /// Generate a presigned URL for a single object
+    Presign(PresignArgs),
 }
 
 /// Shared arguments used by Upload, List and Download.
@@ -144,6 +146,29 @@ pub struct StatArgs {
     /// Output machine-readable JSON instead of human-readable text.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PresignArgs {
+    /// Compose shared R2 arguments into this struct.
+    #[command(flatten)]
+    pub r2: R2Args,
+
+    /// Object key in R2 to presign.
+    #[arg(value_name = "KEY")]
+    pub key: String,
+
+    /// Expiry in seconds (1..604800, default 3600).
+    #[arg(long, default_value_t = 3600, value_parser = clap::value_parser!(u64).range(1..=604800))]
+    pub expires: u64,
+
+    /// HTTP method to presign (get or put).
+    #[arg(long, default_value = "get", value_parser = ["get", "put"])]
+    pub method: String,
+
+    /// Content-Type for PUT presigning (must match actual upload header).
+    #[arg(long)]
+    pub content_type: Option<String>,
 }
 
 #[cfg(test)]
@@ -382,6 +407,95 @@ mod tests {
         let err = Cli::try_parse_from([
             "cloudflare_r2",
             "stat",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+            "--account-id",
+            "acc123",
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("required"));
+    }
+
+    #[test]
+    fn parses_presign() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "presign",
+            "images/photo.jpg",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+            "--account-id",
+            "acc123",
+        ])
+        .expect("parse should succeed");
+        let Commands::Presign(args) = cli.command else {
+            panic!("expected presign");
+        };
+        assert_eq!(args.key, "images/photo.jpg");
+        assert_eq!(args.expires, 3600);
+        assert_eq!(args.method, "get");
+    }
+
+    #[test]
+    fn parses_presign_put() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "presign",
+            "images/photo.jpg",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+            "--method",
+            "put",
+            "--content-type",
+            "image/jpeg",
+        ])
+        .expect("parse should succeed");
+        let Commands::Presign(args) = cli.command else {
+            panic!("expected presign");
+        };
+        assert_eq!(args.method, "put");
+        assert_eq!(args.content_type, Some("image/jpeg".to_string()));
+    }
+
+    #[test]
+    fn parses_presign_expires() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "presign",
+            "images/photo.jpg",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+            "--expires",
+            "600",
+        ])
+        .expect("parse should succeed");
+        let Commands::Presign(args) = cli.command else {
+            panic!("expected presign");
+        };
+        assert_eq!(args.expires, 600);
+    }
+
+    #[test]
+    fn rejects_presign_missing_key() {
+        let err = Cli::try_parse_from([
+            "cloudflare_r2",
+            "presign",
             "--bucket",
             "my-bucket",
             "--access-key",

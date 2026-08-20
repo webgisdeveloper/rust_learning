@@ -26,5 +26,6 @@ async fn main() -> Result<()> {
         Commands::Download(args) => r2::run_download(args, cli.verbose).await,
         Commands::Delete(args) => r2::run_delete(args, cli.verbose).await,
         Commands::Stat(args) => r2::run_stat(args, cli.verbose).await,
+        Commands::Presign(args) => r2::run_presign(args, cli.verbose).await,
     }
 }
