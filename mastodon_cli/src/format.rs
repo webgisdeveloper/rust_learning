@@ -53,6 +53,107 @@ pub(crate) fn replace_emojis(text: &str) -> String {
     .into_owned()
 }
 
+/// A warning that a shortcode was not found, with close suggestions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EmojiWarning {
+    /// The unknown shortcode without colons, e.g. `"fox"`.
+    pub shortcode: String,
+    /// Up to 3 suggestions as `(shortcode, emoji)` pairs, e.g. `[("fox_face", "🦊")]`.
+    pub suggestions: Vec<(String, String)>,
+}
+
+/// Compute Levenshtein edit distance (pure, no alloc beyond two rows).
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            cur[j + 1] = (prev[j + 1] + 1) // deletion
+                .min(cur[j] + 1) // insertion
+                .min(prev[j] + cost); // substitution
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// Suggest up to `limit` close shortcodes for an unknown `query`.
+///
+/// Heuristic: meaningful substring match OR Levenshtein distance ≤ 2.
+/// Substring is considered meaningful only if `candidate.contains(query)` with
+/// `query.len()>=2` or `query.contains(candidate)` with `candidate.len()>=3`
+/// to avoid trivial 1-char matches like `:o:` for `:unknown_shortcode:`.
+/// Results are sorted with substring matches first, then by distance.
+/// Uses all gemoji shortcodes (including aliases) via `emoji.shortcodes()`.
+pub(crate) fn suggest_emojis(query: &str, limit: usize) -> Vec<(String, String)> {
+    let query_lc = query.to_ascii_lowercase();
+    let mut candidates: Vec<(u8, usize, String, String)> = Vec::new();
+    for emoji in emojis::iter() {
+        for sc in emoji.shortcodes() {
+            let sc_lc = sc.to_ascii_lowercase();
+            let dist = levenshtein(&query_lc, &sc_lc);
+            let is_substring = (sc_lc.contains(&query_lc) && query_lc.len() >= 2)
+                || (query_lc.contains(&sc_lc) && sc_lc.len() >= 3);
+            if dist <= 2 || is_substring {
+                // 0 = substring (preferred), 1 = edit-distance only
+                let rank: u8 = if is_substring { 0 } else { 1 };
+                candidates.push((rank, dist, sc.to_string(), emoji.as_str().to_string()));
+            }
+        }
+    }
+    // Sort: substring first, then distance, then alphabetically for stability
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)));
+    candidates.dedup_by(|a, b| a.2 == b.2);
+    candidates
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, sc, em)| (sc, em))
+        .collect()
+}
+
+/// Like `replace_emojis` but also returns warnings for unknown shortcodes.
+///
+/// Keeps unknown `:shortcode:` unchanged (no data loss) and attaches
+/// `EmojiWarning`s with up to 3 suggestions each. Pure — caller decides how
+/// to display warnings (e.g. `eprintln!` in `main.rs` posting path).
+///
+/// Example: `"Hi :fox: :rocket:"` → `("Hi :fox: 🚀", [EmojiWarning{shortcode:"fox", suggestions:[("fox_face","🦊")] }])`
+pub(crate) fn replace_emojis_with_warnings(text: &str) -> (String, Vec<EmojiWarning>) {
+    let re = EMOJI_RE.get_or_init(|| Regex::new(r":([a-z0-9_]+):").unwrap());
+    let mut warnings: Vec<EmojiWarning> = Vec::new();
+    // Use `replace_all` with a closure that captures &mut warnings
+    let replaced = re
+        .replace_all(text, |caps: &regex::Captures| {
+            let shortcode = &caps[1];
+            match emojis::get_by_shortcode(shortcode) {
+                Some(emoji) => emoji.as_str().to_string(),
+                None => {
+                    // Collect warning deduped by shortcode (avoid duplicate warnings for same typo repeated)
+                    if !warnings.iter().any(|w| w.shortcode == shortcode) {
+                        let suggestions = suggest_emojis(shortcode, 3);
+                        warnings.push(EmojiWarning {
+                            shortcode: shortcode.to_string(),
+                            suggestions,
+                        });
+                    }
+                    caps[0].to_string()
+                }
+            }
+        })
+        .into_owned();
+    (replaced, warnings)
+}
+
 // ---------------------------------------------------------------------------
 // HTML cleaning — strip tags + decode entities
 // ---------------------------------------------------------------------------
@@ -280,5 +381,41 @@ mod tests {
             ..status("Reply with image!")
         };
         assert!(format_status(0, &both).contains("🧵 Reply  🖼️ Attachment"));
+    }
+
+    #[test]
+    fn suggests_fox_face_for_fox() {
+        let sug = suggest_emojis("fox", 3);
+        assert!(sug.iter().any(|(sc, _)| sc == "fox_face"), "expected fox_face in {sug:?}");
+        assert_eq!(sug[0].0, "fox_face"); // substring ranked first
+    }
+
+    #[test]
+    fn suggests_rocket_for_typo() {
+        let sug = suggest_emojis("roket", 3);
+        assert!(sug.iter().any(|(sc, _)| sc == "rocket"));
+    }
+
+    #[test]
+    fn warnings_for_unknown_shortcode() {
+        let (text, warnings) = replace_emojis_with_warnings("Hi :fox: :rocket:");
+        assert_eq!(text, "Hi :fox: 🚀"); // unknown kept, known expanded
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].shortcode, "fox");
+        assert!(warnings[0].suggestions.iter().any(|(sc, _)| sc == "fox_face"));
+    }
+
+    #[test]
+    fn no_warnings_for_known() {
+        let (text, warnings) = replace_emojis_with_warnings("Launch :rocket:");
+        assert_eq!(text, "Launch 🚀");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn warns_no_suggestions_for_gibberish() {
+        let (_, warnings) = replace_emojis_with_warnings("Hi :unknown_shortcode:");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].suggestions.is_empty());
     }
 }

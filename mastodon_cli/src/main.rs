@@ -37,8 +37,9 @@ mod format;
 use api::{api_url, Account, Status, StatusRequest};
 use clap::Parser; // brings `Args::parse()` into scope — `Parser` is a trait
 use cli::Args;
-use format::replace_emojis;
+use format::{replace_emojis, replace_emojis_with_warnings, EmojiWarning};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use std::io::{self, IsTerminal, Write};
 
 /// Default Mastodon instance when the user provides no `--instance` and no
 /// `MASTODON_INSTANCE` env var. Keeping this as a `const` makes it easy to
@@ -109,8 +110,104 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- 5. Branch: POST (message provided) vs GET (list recent statuses) ---
     if let Some(msg) = args.message {
         // ===================== CASE 1: Post a new status =====================
+        // Check emojis before any network I/O. Unknown shortcodes trigger an
+        // interactive prompt (e.g. `:fox:` → suggest `:fox_face:` 🦊) so we
+        // correct the message *before* uploading media or posting.
+        let (expanded, warnings) = replace_emojis_with_warnings(&msg);
+        let final_status = if warnings.is_empty() {
+            expanded
+        } else if !io::stdin().is_terminal() {
+            // Non-interactive (pipe/CI) — cannot prompt, so abort without posting
+            for EmojiWarning {
+                shortcode,
+                suggestions,
+            } in &warnings
+            {
+                if suggestions.is_empty() {
+                    eprintln!("warning: unknown emoji shortcode :{shortcode}: - no close matches found (kept as-is)");
+                } else {
+                    let list: Vec<String> = suggestions
+                        .iter()
+                        .map(|(sc, em)| format!(":{sc}: {em}"))
+                        .collect();
+                    eprintln!(
+                        "warning: unknown emoji shortcode :{shortcode}: - did you mean {}? (kept as-is)",
+                        list.join(", ")
+                    );
+                }
+            }
+            eprintln!("error: unknown emoji shortcode(s) found. Aborting without posting. Run interactively to choose a replacement or fix your message.");
+            std::process::exit(1);
+        } else {
+            // Interactive: don't post yet, ask user to pick a replacement
+            let mut corrected = msg.clone();
+            for warning in &warnings {
+                eprintln!(
+                    "\nwarning: unknown emoji shortcode :{}: - did you mean {}? (kept as-is)",
+                    warning.shortcode,
+                    if warning.suggestions.is_empty() {
+                        "no close matches".to_string()
+                    } else {
+                        warning
+                            .suggestions
+                            .iter()
+                            .map(|(sc, em)| format!(":{sc}: {em}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                );
+                eprintln!("Choose a replacement for :{}:", warning.shortcode);
+                eprintln!("  0) Keep as-is :{}:", warning.shortcode);
+                for (i, (sc, em)) in warning.suggestions.iter().enumerate() {
+                    eprintln!("  {}) :{}: {}", i + 1, sc, em);
+                }
+                eprintln!("  a) Abort - exit without posting");
+                let choice = loop {
+                    eprint!("Enter choice [0-{},a]: ", warning.suggestions.len());
+                    io::stderr().flush()?;
+                    let mut input = String::new();
+                    let n = io::stdin().read_line(&mut input)?;
+                    if n == 0 {
+                        // EOF (Ctrl-D) -> abort without posting
+                        eprintln!("\nAborted. Message not posted.");
+                        std::process::exit(0);
+                    }
+                    let trimmed = input.trim();
+                    if trimmed.eq_ignore_ascii_case("a")
+                        || trimmed.eq_ignore_ascii_case("abort")
+                        || trimmed.eq_ignore_ascii_case("q")
+                        || trimmed.eq_ignore_ascii_case("quit")
+                        || trimmed.eq_ignore_ascii_case("exit")
+                    {
+                        eprintln!("Aborted. Message not posted.");
+                        std::process::exit(0);
+                    }
+                    match trimmed.parse::<usize>() {
+                        Ok(num) if num <= warning.suggestions.len() => break num,
+                        _ => {
+                            eprintln!(
+                                "Invalid choice, please enter 0..{} or 'a' to abort",
+                                warning.suggestions.len()
+                            );
+                            continue;
+                        }
+                    }
+                };
+                if choice == 0 {
+                    eprintln!(" -> keeping :{}: as-is", warning.shortcode);
+                } else {
+                    let (chosen_sc, chosen_emoji) = &warning.suggestions[choice - 1];
+                    let placeholder = format!(":{}:", warning.shortcode);
+                    corrected = corrected.replace(&placeholder, chosen_emoji);
+                    eprintln!(" -> replaced :{}: with :{}: {}", warning.shortcode, chosen_sc, chosen_emoji);
+                }
+            }
+            eprintln!("\nCorrected message: {}", corrected);
+            // Re-expand any remaining known shortcodes (e.g. :rocket: in the same msg)
+            replace_emojis(&corrected)
+        };
 
-        // Optional: upload an image first. The Mastodon API requires a two-step
+        // Optional: upload an image. The Mastodon API requires a two-step
         // process: 1) POST /api/v1/media → get media ID, 2) POST /api/v1/statuses
         // with that ID. `upload_media` is `async` so we `.await` it.
         let mut media_ids = None;
@@ -123,10 +220,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Image uploaded successfully.");
         }
 
-        // Build the JSON body. `replace_emojis` expands `:rocket:` → 🚀 before
-        // sending, so the server stores actual Unicode.
         let body = StatusRequest {
-            status: replace_emojis(&msg),
+            status: final_status,
             media_ids,
         };
 
