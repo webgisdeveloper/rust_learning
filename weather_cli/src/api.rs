@@ -1,5 +1,5 @@
 use colored::*;
-use crate::models::{GeoResult, WeatherResponse};
+use crate::models::{GeoResult, IpApiResponse, WeatherResponse};
 
 pub fn geocode(
     city: &str,
@@ -55,6 +55,73 @@ pub fn get_weather_by_coords(
     let response = reqwest::blocking::get(&url)?;
     let response_json = response.json::<WeatherResponse>()?;
     Ok(response_json)
+}
+
+/// Auto-detect location via IP geolocation (ip-api.com, no API key required).
+/// Falls back to ipinfo.io if the primary service fails.
+pub fn auto_detect_location() -> Result<GeoResult, Box<dyn std::error::Error>> {
+    // Primary: ip-api.com
+    let primary_url = "http://ip-api.com/json/?fields=status,message,country,countryCode,region,regionName,city,lat,lon,zip,query";
+    println!("{} {}", "Auto-detecting location via IP:".blue(), primary_url.blue().underline());
+    let resp = reqwest::blocking::get(primary_url)?;
+    let ip: IpApiResponse = resp.json()?;
+    if ip.status == "success" {
+        if let (Some(lat), Some(lon)) = (ip.lat, ip.lon) {
+            let city = ip.city.clone().unwrap_or_else(|| "Unknown".to_string());
+            let country = ip.country_code.clone().unwrap_or_else(|| ip.country.clone().unwrap_or_default());
+            let state = ip.region.clone().filter(|s| !s.is_empty()).or_else(|| ip.region_name.clone());
+            println!(
+                "{} {} ({}), {} [{:.4},{:.4}]",
+                "Detected:".green(),
+                city,
+                state.clone().unwrap_or_default(),
+                country,
+                lat,
+                lon
+            );
+            return Ok(GeoResult {
+                name: city,
+                lat,
+                lon,
+                country,
+                state,
+            });
+        }
+    }
+    // Fallback: ipinfo.io (no token, limited rate)
+    let fallback_url = "https://ipinfo.io/json";
+    println!("{} {} - trying fallback...", "Primary IP geolocation failed:".yellow(), ip.message.unwrap_or_default());
+    println!("{} {}", "Trying fallback:".blue(), fallback_url.blue().underline());
+    let resp = reqwest::blocking::get(fallback_url)?;
+    let json: serde_json::Value = resp.json()?;
+    // ipinfo returns loc as "lat,lon"
+    if let Some(loc_str) = json.get("loc").and_then(|v| v.as_str()) {
+        let mut parts = loc_str.split(',');
+        if let (Some(lat_s), Some(lon_s)) = (parts.next(), parts.next()) {
+            if let (Ok(lat), Ok(lon)) = (lat_s.parse::<f64>(), lon_s.parse::<f64>()) {
+                let city = json.get("city").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                let country = json.get("country").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let state = json.get("region").and_then(|v| v.as_str()).map(|s| s.to_string());
+                println!(
+                    "{} {} ({}), {} [{:.4},{:.4}]",
+                    "Detected (fallback):".green(),
+                    city,
+                    state.clone().unwrap_or_default(),
+                    country,
+                    lat,
+                    lon
+                );
+                return Ok(GeoResult {
+                    name: city,
+                    lat,
+                    lon,
+                    country,
+                    state,
+                });
+            }
+        }
+    }
+    Err(format!("Failed to auto-detect location: {}", json).into())
 }
 
 // Legacy direct q=city lookup (kept as fallback, but geocoding+coords is preferred for disambiguation)

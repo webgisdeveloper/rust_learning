@@ -43,3 +43,21 @@ pub struct GeoResult {
     pub country: String,
     pub state: Option<String>,
 }
+
+// IP geolocation response (ip-api.com)
+#[derive(Deserialize, Debug)]
+pub struct IpApiResponse {
+    pub status: String,
+    pub message: Option<String>,
+    pub country: Option<String>,
+    #[serde(rename = "countryCode")]
+    pub country_code: Option<String>,
+    pub region: Option<String>,
+    #[serde(rename = "regionName")]
+    pub region_name: Option<String>,
+    pub city: Option<String>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub zip: Option<String>,
+    pub query: Option<String>,
+}

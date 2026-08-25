@@ -49,4 +49,9 @@ pub struct Args {
     /// Show ASCII world map (80×40 box, * for land, . for sea, ★ marks location) – off by default
     #[arg(long)]
     pub map: bool,
+
+    /// Automatically detect location via IP geolocation (no CITY needed).
+    /// Equivalent to passing "auto" as CITY. Uses ip-api.com to resolve lat/lon.
+    #[arg(long)]
+    pub auto: bool,
 }

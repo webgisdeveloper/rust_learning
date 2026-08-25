@@ -54,17 +54,49 @@ fn main() {
         return;
     }
 
-    // 3) Name-based mode (city required)
+    // 3) Auto-detect mode via IP geolocation (--auto or CITY == "auto")
+    let is_auto = args.auto
+        || args
+            .city
+            .as_deref()
+            .map(|c| c.eq_ignore_ascii_case("auto"))
+            .unwrap_or(false);
+    if is_auto {
+        match api::auto_detect_location() {
+            Ok(loc) => {
+                if args.list {
+                    print_geo_table(std::slice::from_ref(&loc));
+                    return;
+                }
+                match get_weather_by_coords(loc.lat, loc.lon, &api_key) {
+                    Ok(info) => display_weather_info(&info, Some(&loc), args.map),
+                    Err(e) => {
+                        eprintln!("{} {}", "Error fetching weather data:".red(), e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{} {}", "Error auto-detecting location:".red(), e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // 4) Name-based mode (city required)
     let city = match args.city {
         Some(c) => c,
         None => {
             eprintln!(
                 "{}",
-                "error: CITY is required unless --lat/--lon or --zip is used".red()
+                "error: CITY is required unless --lat/--lon, --zip or --auto is used".red()
             );
             eprintln!(
-                "Usage: weather_cli <CITY> [COUNTRY_CODE] [--state STATE] [--country COUNTRY]"
+                "Usage: weather_cli <CITY> [COUNTRY_CODE] [--state STATE] [--country COUNTRY] [--auto]"
             );
+            eprintln!("       weather_cli --auto    # auto-detect via IP");
+            eprintln!("       weather_cli auto      # shorthand for --auto");
             eprintln!("Try 'weather_cli --help' for more information.");
             std::process::exit(2);
         }
