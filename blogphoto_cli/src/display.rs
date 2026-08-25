@@ -4,6 +4,7 @@ use std::path::Path;
 use colored::Colorize;
 
 use crate::exif::ExifField;
+use crate::privacy::PrivacyFinding;
 
 /// Filter fields by optional case-insensitive substring on tag/ifd/value/code.
 pub fn filter_fields<'a>(fields: &'a [ExifField], filter: Option<&str>) -> Vec<&'a ExifField> {
@@ -183,4 +184,153 @@ pub fn print_no_exif_warning(path: &Path) {
         "info:".cyan(),
         path.display().to_string().yellow()
     );
+}
+
+pub fn print_check_human(folder: &Path, findings: &[PrivacyFinding], verbose: bool, strict: bool) {
+    let total = findings.len();
+    let issues = findings.iter().filter(|f| f.has_issue).count();
+    let safe = total - issues;
+
+    println!(
+        "{} {}",
+        "Scanning:".bold().cyan(),
+        folder.display().to_string().yellow()
+    );
+    println!(
+        "{} {} image{} found{}",
+        "—".dimmed(),
+        total.to_string().bold(),
+        if total == 1 { "" } else { "s" },
+        if strict {
+            " (strict mode: any EXIF flagged)".dimmed().to_string()
+        } else {
+            "".to_string()
+        }
+    );
+    println!();
+
+    if total == 0 {
+        println!("{}", "  No images found in folder (supported: jpg, jpeg, png, tiff, webp, heic, heif, avif)".dimmed());
+        return;
+    }
+
+    if issues == 0 {
+        println!("{}", "✅ No privacy issues found — all photos safe to publish".green().bold());
+        if verbose {
+            // list safe files
+            for f in findings {
+                let name = f.file.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                if !f.has_exif {
+                    println!("  {} {} — {}", "SAFE".green(), name.bold(), "No EXIF".dimmed());
+                } else {
+                    println!(
+                        "  {} {} — {} tags, no GPS",
+                        "SAFE".green(),
+                        name.bold(),
+                        f.tag_count
+                    );
+                }
+            }
+        } else {
+            println!("{}", "  (use --verbose to list safe files)".dimmed());
+        }
+        println!();
+        println!(
+            "{}",
+            format!("Summary: {}/{} safe, 0 with issues", safe, total).dimmed()
+        );
+        return;
+    }
+
+    // Issues found
+    println!(
+        "{}",
+        format!(
+            "⚠️  Privacy issues found in {} / {} image{}",
+            issues,
+            total,
+            if total == 1 { "" } else { "s" }
+        )
+        .yellow()
+        .bold()
+    );
+    println!();
+
+    for f in findings.iter().filter(|f| f.has_issue) {
+        // Show relative path if nested
+        let display = if f.file.strip_prefix(folder).is_ok() {
+            f.file.strip_prefix(folder).unwrap().display().to_string()
+        } else {
+            f.file.display().to_string()
+        };
+        println!("  {} {}", "→".red().bold(), display.bold().red());
+        for reason in &f.reasons {
+            println!("     {} {}", "•".yellow(), reason);
+        }
+        println!();
+    }
+
+    if verbose || safe > 0 {
+        let safe_findings: Vec<&PrivacyFinding> = findings.iter().filter(|f| !f.has_issue).collect();
+        if !safe_findings.is_empty() {
+            if verbose {
+                println!("{}", "Safe files:".green().bold());
+                for f in safe_findings {
+                    let name = f.file.display().to_string();
+                    let display = if f.file.strip_prefix(folder).is_ok() {
+                        f.file.strip_prefix(folder).unwrap().display().to_string()
+                    } else {
+                        name.clone()
+                    };
+                    if !f.has_exif {
+                        println!("  {} {} — {}", "✔".green(), display, "No EXIF".dimmed());
+                    } else {
+                        println!("  {} {} — {} tags, no sensitive data", "✔".green(), display, f.tag_count);
+                    }
+                }
+                println!();
+            } else {
+                println!(
+                    "{}",
+                    format!("  {} safe file{} not shown (use --verbose to list)", safe, if safe==1{""} else {"s"}).dimmed()
+                );
+            }
+        }
+    }
+
+    println!(
+        "{}",
+        format!(
+            "Summary: {} with issues, {} safe — {} total",
+            issues, safe, total
+        )
+        .dimmed()
+    );
+    if issues > 0 {
+        println!(
+            "{}",
+            "Tip: strip EXIF before publishing: blogphoto exif <FILE> to inspect, then use a strip tool (e.g. exiftool -all= file.jpg)"
+                .dimmed()
+        );
+    }
+}
+
+pub fn print_check_json(findings: &[PrivacyFinding]) {
+    let total = findings.len();
+    let issues = findings.iter().filter(|f| f.has_issue).count();
+    let json = serde_json::json!({
+        "total": total,
+        "issues": issues,
+        "safe": total - issues,
+        "findings": findings.iter().map(|f| {
+            serde_json::json!({
+                "file": f.file.display().to_string(),
+                "has_issue": f.has_issue,
+                "has_exif": f.has_exif,
+                "tag_count": f.tag_count,
+                "reasons": f.reasons,
+            })
+        }).collect::<Vec<_>>()
+    });
+    println!("{}", serde_json::to_string_pretty(&json).unwrap());
 }

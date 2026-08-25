@@ -18,6 +18,31 @@ pub struct Cli {
 pub enum Commands {
     /// List all EXIF info from a photo
     Exif(ExifArgs),
+    /// Check a folder for privacy-sensitive EXIF (GPS etc.)
+    Check(CheckArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct CheckArgs {
+    /// Folder to scan for images
+    #[arg(value_name = "FOLDER")]
+    pub folder: PathBuf,
+
+    /// Recurse into subdirectories
+    #[arg(long, short = 'r')]
+    pub recursive: bool,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+
+    /// Strict mode: flag any EXIF (device/software/thumbnail) as privacy issue, not just GPS
+    #[arg(long)]
+    pub strict: bool,
+
+    /// Show all files, not just those with issues
+    #[arg(long, short = 'v')]
+    pub verbose: bool,
 }
 
 #[derive(Args, Debug)]
