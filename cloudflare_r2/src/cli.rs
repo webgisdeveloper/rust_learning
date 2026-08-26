@@ -79,6 +79,10 @@ pub struct UploadArgs {
     #[arg(short, long)]
     pub key: Option<String>,
 
+    /// Optional folder/prefix to prepend to the object key (e.g. "my-new-folder" -> "my-new-folder/<key>").
+    #[arg(long)]
+    pub folder: Option<String>,
+
     /// Content-Type override (auto-detected if absent).
     #[arg(long)]
     pub content_type: Option<String>,

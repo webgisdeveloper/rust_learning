@@ -29,11 +29,10 @@ pub async fn run_upload(args: UploadArgs, verbose: bool) -> anyhow::Result<()> {
         );
     }
 
-    // Use filename as the S3 key if no explicit key is provided.
-    let key = args.key.unwrap_or_else(|| derive_key(&args.file));
-    if key.is_empty() {
-        bail!("object key must not be empty; provide --key");
-    }
+    // Derive the S3 key: --key defaults to filename, then prepend --folder if provided.
+    // e.g. --folder my-new-folder + ./photo.jpg => my-new-folder/photo.jpg
+    //      --folder my-new-folder --key images/photo.jpg => my-new-folder/images/photo.jpg
+    let key = resolve_key(&args.file, args.key, args.folder.as_deref())?;
 
     // Initialize the S3 client with Cloudflare R2 credentials.
     let client = build_client(&endpoint_url, &args.r2.access_key, &args.r2.secret_key).await;
@@ -341,6 +340,48 @@ fn derive_endpoint(endpoint: Option<&str>, account_id: Option<&str>) -> Option<S
     // Otherwise, construct the endpoint from the account ID.
     let account_id = account_id?.trim();
     (!account_id.is_empty()).then(|| format!("https://{account_id}.r2.cloudflarestorage.com"))
+}
+
+/// Resolve final object key from file, optional --key and optional --folder.
+/// --folder is prepended as a prefix (normalized, no leading/trailing/double slashes).
+fn resolve_key(file: &Path, key: Option<String>, folder: Option<&str>) -> anyhow::Result<String> {
+    let base = key.unwrap_or_else(|| derive_key(file));
+    let base_trimmed = base.trim();
+    if base_trimmed.is_empty() {
+        bail!("object key must not be empty; provide --key");
+    }
+    // No folder supplied -> return base without leading slash
+    let Some(folder) = folder else {
+        let k = base_trimmed.trim_start_matches('/').to_string();
+        if k.is_empty() {
+            bail!("object key must not be empty; provide --key");
+        }
+        return Ok(k);
+    };
+    let folder_trimmed = folder.trim();
+    if folder_trimmed.is_empty() {
+        let k = base_trimmed.trim_start_matches('/').to_string();
+        if k.is_empty() {
+            bail!("object key must not be empty; provide --key");
+        }
+        return Ok(k);
+    }
+    // Normalize folder: split on '/', trim segments, filter empties, re-join.
+    // Handles "my-folder/", "/my-folder//sub/" -> "my-folder/sub"
+    let normalized = folder_trimmed
+        .split('/')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    if normalized.is_empty() {
+        bail!("folder must not be empty; provide a valid folder name");
+    }
+    let base = base_trimmed.trim_start_matches('/').trim().to_string();
+    if base.is_empty() {
+        bail!("object key must not be empty; provide --key");
+    }
+    Ok(format!("{}/{}", normalized, base))
 }
 
 /// Extracts the filename from a path to use as a default S3 key.
