@@ -137,45 +137,238 @@ pub async fn run_upload(args: UploadArgs, verbose: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Entry point for the download command.
-pub async fn run_download(args: DownloadArgs, verbose: bool) -> anyhow::Result<()> {
-    let key = args.key.trim();
-    if key.is_empty() {
-        bail!("object key must not be empty");
+/// Derive the S3 ListObjectsV2 prefix for a glob pattern: substring up to first wildcard (`*`, `?`, `[`).
+fn derive_list_prefix(pattern: &str) -> String {
+    let mut first = pattern.len();
+    for (i, c) in pattern.char_indices() {
+        if c == '*' || c == '?' || c == '[' {
+            first = i;
+            break;
+        }
     }
-    if key.ends_with('/') {
-        bail!("object key must identify a file, not a directory: {key}");
-    }
+    pattern[..first].to_string()
+}
 
-    let output = derive_output_path(key, args.output)?;
-    if output.exists() && !args.force {
-        bail!(
-            "destination already exists: {}; use --force to overwrite",
-            output.display()
-        );
-    }
+/// Check whether a key matches a glob pattern using `glob::Pattern`.
+#[allow(dead_code)]
+fn glob_pattern_matches(pattern: &str, key: &str) -> anyhow::Result<bool> {
+    let pat = glob::Pattern::new(pattern)
+        .with_context(|| format!("invalid glob pattern: {pattern}"))?;
+    Ok(pat.matches(key))
+}
 
-    if let Some(parent) = output.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        tokio::fs::create_dir_all(parent)
+/// Expand a single remote wildcard pattern by listing objects with the derived prefix
+/// and filtering locally via `glob::Pattern`. Assumes `pattern` contains glob meta.
+async fn expand_single_remote_pattern(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    pattern: &str,
+) -> anyhow::Result<Vec<String>> {
+    let prefix = derive_list_prefix(pattern);
+    let pat = glob::Pattern::new(pattern)
+        .with_context(|| format!("invalid glob pattern: {pattern}"))?;
+    let mut matched = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let mut req = client.list_objects_v2().bucket(bucket);
+        if !prefix.is_empty() {
+            req = req.prefix(prefix.clone());
+        }
+        if let Some(t) = token.take() {
+            req = req.continuation_token(t);
+        }
+        let resp = req
+            .send()
             .await
-            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+            .context("list_objects failed — check bucket, credentials, endpoint and network")?;
+        for obj in resp.contents() {
+            if let Some(k) = obj.key() {
+                if pat.matches(k) {
+                    matched.push(k.to_string());
+                }
+            }
+        }
+        if !resp.is_truncated().unwrap_or(false) {
+            break;
+        }
+        token = resp.next_continuation_token().map(|s| s.to_owned());
+        if token.is_none() {
+            bail!("R2 returned a truncated object list without a continuation token");
+        }
+    }
+    Ok(matched)
+}
+
+/// Expand a list of remote key patterns (literal or wildcard) into concrete keys.
+/// Wildcards are resolved via `expand_single_remote_pattern`; literals are kept as-is.
+async fn expand_remote_keys(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    patterns: &[String],
+) -> anyhow::Result<Vec<String>> {
+    let mut resolved: Vec<String> = Vec::new();
+    for pat in patterns {
+        let trimmed = pat.trim();
+        if trimmed.is_empty() {
+            bail!("object key must not be empty");
+        }
+        if is_glob_pattern(trimmed) {
+            let matched = expand_single_remote_pattern(client, bucket, trimmed).await?;
+            if matched.is_empty() {
+                bail!("no objects matched pattern: {trimmed}");
+            }
+            resolved.extend(matched);
+        } else {
+            if trimmed.ends_with('/') {
+                bail!("object key must identify a file, not a directory: {trimmed}");
+            }
+            resolved.push(trimmed.to_string());
+        }
+    }
+    // Deduplicate preserving order
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped = Vec::new();
+    for k in resolved {
+        if seen.insert(k.clone()) {
+            deduped.push(k);
+        }
+    }
+    Ok(deduped)
+}
+
+/// Entry point for the download command. Supports wildcards such as `*.gif` or `mm*.jpg`
+/// against remote keys (listed via ListObjectsV2 and filtered locally).
+pub async fn run_download(args: DownloadArgs, verbose: bool) -> anyhow::Result<()> {
+    if args.keys.is_empty() {
+        bail!("object key must not be empty");
     }
 
     let endpoint_url = endpoint_for(&args.r2)?;
     if verbose {
-        eprintln!(
-            "Endpoint: {}\nBucket: {}\nKey: {}\nOutput: {}",
-            endpoint_url,
-            args.r2.bucket,
-            key,
-            output.display()
+        eprintln!("Endpoint: {}\nBucket: {}", endpoint_url, args.r2.bucket);
+    }
+    let client = build_client(&endpoint_url, &args.r2.access_key, &args.r2.secret_key).await;
+
+    // Expand wildcards against remote bucket; literals pass through unchanged.
+    let keys = expand_remote_keys(&client, &args.r2.bucket, &args.keys).await?;
+
+    if keys.is_empty() {
+        bail!("no objects to download");
+    }
+
+    // Validate --output handling for multi-file downloads.
+    if keys.len() > 1 {
+        if let Some(out) = &args.output {
+            // --output must be a directory when downloading many files (or not exist yet and be intended as dir).
+            // If it exists as a file, error out early.
+            if out.exists() && out.is_file() {
+                bail!(
+                    "--output must be a directory when downloading multiple files: {}",
+                    out.display()
+                );
+            }
+            if verbose {
+                eprintln!(
+                    "Keys: {} ({} matched)\nOutput dir: {}",
+                    keys.join(", "),
+                    keys.len(),
+                    out.display()
+                );
+            }
+        } else if verbose {
+            eprintln!("Keys: {} ({} matched)", keys.join(", "), keys.len());
+        }
+    } else if verbose {
+        eprintln!("Key: {}", keys[0]);
+    }
+
+    let mut downloaded = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+
+    for key in &keys {
+        // Resolve local destination per key.
+        let output: PathBuf = if keys.len() == 1 {
+            // Single-file mode: honor --output as file or directory if it is an existing directory.
+            if let Some(p) = &args.output {
+                if p.is_dir() {
+                    let fname = Path::new(key)
+                        .file_name()
+                        .with_context(|| format!("object key does not contain a filename: {key}"))?;
+                    p.join(fname)
+                } else {
+                    derive_output_path(key, Some(p.clone()))?
+                }
+            } else {
+                derive_output_path(key, None)?
+            }
+        } else {
+            // Multi-file mode: --output is a directory (or "." by default), file name is basename of key.
+            let dir = args.output.as_deref().unwrap_or(Path::new("."));
+            let fname = Path::new(key)
+                .file_name()
+                .with_context(|| format!("object key does not contain a filename: {key}"))?;
+            dir.join(fname)
+        };
+
+        if output.exists() && !args.force {
+            let msg = format!(
+                "destination already exists: {}; use --force to overwrite",
+                output.display()
+            );
+            if keys.len() == 1 {
+                bail!(msg);
+            } else {
+                eprintln!("Skipping s3://{}/{}: {msg}", args.r2.bucket, key);
+                failures.push(format!("{key}: {msg}"));
+                continue;
+            }
+        }
+
+        if let Some(parent) = output.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("failed to create directory {}", parent.display()))?;
+        }
+
+        if verbose {
+            eprintln!(
+                "Downloading s3://{}/{} -> {}",
+                args.r2.bucket,
+                key,
+                output.display()
+            );
+        }
+
+        match download(&client, &args.r2.bucket, key, &output, verbose).await {
+            Ok(_) => downloaded += 1,
+            Err(e) => {
+                let msg = format!("{key}: {e:#}");
+                eprintln!("Failed to download {msg}");
+                failures.push(msg.clone());
+                // For single-file mode, fail fast with the underlying error (preserves "object not found" etc.)
+                if keys.len() == 1 {
+                    // include aggregated context but keep original bail for not-found etc.
+                    bail!("{msg}");
+                }
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        bail!(
+            "downloaded {downloaded}/{} file(s); failures:\n{}",
+            keys.len(),
+            failures.join("\n")
         );
     }
 
-    let client = build_client(&endpoint_url, &args.r2.access_key, &args.r2.secret_key).await;
-    download(&client, &args.r2.bucket, key, &output, verbose).await
+    if verbose && keys.len() > 1 {
+        eprintln!("Downloaded {downloaded} file(s)");
+    }
+
+    Ok(())
 }
 
 /// Entry point for the delete command.
@@ -1171,6 +1364,30 @@ mod tests {
         // should deduplicate a.gif
         assert_eq!(res.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn derives_list_prefix_for_glob() {
+        assert_eq!(derive_list_prefix("*.gif"), "");
+        assert_eq!(derive_list_prefix("mm*.jpg"), "mm");
+        assert_eq!(derive_list_prefix("images/*.jpg"), "images/");
+        assert_eq!(derive_list_prefix("a/b/c*.txt"), "a/b/c");
+        assert_eq!(derive_list_prefix("plain.txt"), "plain.txt");
+        assert_eq!(derive_list_prefix("a[bc].txt"), "a");
+        assert_eq!(derive_list_prefix("file?.txt"), "file");
+    }
+
+    #[test]
+    fn matches_glob_pattern_for_keys() {
+        assert!(glob_pattern_matches("*.gif", "a.gif").unwrap());
+        assert!(glob_pattern_matches("*.gif", "dir/a.gif").unwrap());
+        assert!(glob_pattern_matches("mm*.jpg", "mm1.jpg").unwrap());
+        assert!(!glob_pattern_matches("mm*.jpg", "xx1.jpg").unwrap());
+        assert!(glob_pattern_matches("images/*.jpg", "images/a.jpg").unwrap());
+        assert!(glob_pattern_matches("*.jpg", "a.jpg").unwrap());
+        assert!(glob_pattern_matches("a[bc].txt", "ab.txt").unwrap());
+        assert!(!glob_pattern_matches("a[bc].txt", "ad.txt").unwrap());
+        assert!(glob_pattern_matches("file?.txt", "file1.txt").unwrap());
     }
 
     #[test]

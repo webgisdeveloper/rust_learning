@@ -114,11 +114,12 @@ pub struct DownloadArgs {
     #[command(flatten)]
     pub r2: R2Args,
 
-    /// Object key in R2 to download.
-    #[arg(value_name = "KEY")]
-    pub key: String,
+    /// Object key(s) in R2 to download. Supports wildcards (e.g. "*.gif", "mm*.jpg", "images/*.jpg") to download all matching objects.
+    /// Quoted patterns (e.g. "*.gif") are expanded against remote keys; shell-expanded lists are also supported.
+    #[arg(value_name = "KEY", required = true)]
+    pub keys: Vec<String>,
 
-    /// Local destination path. Defaults to the key's filename.
+    /// Local destination path. Defaults to the key's filename. When downloading multiple files via wildcards, this is treated as a directory (defaults to current dir).
     #[arg(short, long, value_name = "FILE")]
     pub output: Option<PathBuf>,
 
@@ -324,9 +325,53 @@ mod tests {
         let Commands::Download(args) = cli.command else {
             panic!("expected download");
         };
-        assert_eq!(args.key, "images/photo.jpg");
+        assert_eq!(args.keys, vec!["images/photo.jpg".to_string()]);
         assert_eq!(args.output, Some(PathBuf::from("./local.jpg")));
         assert_eq!(args.r2.bucket, "my-bucket");
+    }
+
+    #[test]
+    fn parses_download_with_wildcard() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "download",
+            "*.gif",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+        ])
+        .expect("parse should succeed");
+        let Commands::Download(args) = cli.command else {
+            panic!("expected download");
+        };
+        assert_eq!(args.keys, vec!["*.gif".to_string()]);
+    }
+
+    #[test]
+    fn parses_download_with_multiple_keys() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "download",
+            "a.jpg",
+            "b.jpg",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+        ])
+        .expect("parse should succeed");
+        let Commands::Download(args) = cli.command else {
+            panic!("expected download");
+        };
+        assert_eq!(
+            args.keys,
+            vec!["a.jpg".to_string(), "b.jpg".to_string()]
+        );
     }
 
     #[test]
