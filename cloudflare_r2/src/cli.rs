@@ -71,11 +71,12 @@ pub struct UploadArgs {
     #[command(flatten)]
     pub r2: R2Args,
 
-    /// Local file to upload. PathBuf is used for cross-platform file path handling.
-    #[arg(value_name = "FILE")]
-    pub file: PathBuf,
+    /// Local file(s) to upload. Supports wildcards (e.g. "*.gif", "mm*.jpg") to upload all matching files in the current folder.
+    /// Shell-expanded lists (e.g. upload *.gif without quotes) and quoted patterns (e.g. upload "*.gif") are both supported.
+    #[arg(value_name = "FILE", required = true)]
+    pub files: Vec<String>,
 
-    /// Object key in bucket (defaults to filename).
+    /// Object key in bucket (defaults to filename). Cannot be used when uploading multiple files via wildcards; use --folder for a prefix instead.
     #[arg(short, long)]
     pub key: Option<String>,
 
@@ -201,7 +202,7 @@ mod tests {
         let Commands::Upload(args) = cli.command else {
             panic!("expected upload");
         };
-        assert_eq!(args.file, PathBuf::from("./photo.jpg"));
+        assert_eq!(args.files, vec!["./photo.jpg".to_string()]);
         assert_eq!(args.r2.bucket, "my-bucket");
         assert_eq!(args.r2.account_id, Some("acc123".to_string()));
     }
@@ -227,6 +228,51 @@ mod tests {
             panic!("expected upload");
         };
         assert_eq!(args.description, Some("A test description".to_string()));
+    }
+
+    #[test]
+    fn parses_upload_with_wildcard_pattern() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "upload",
+            "*.gif",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+        ])
+        .expect("parse should succeed");
+        let Commands::Upload(args) = cli.command else {
+            panic!("expected upload");
+        };
+        assert_eq!(args.files, vec!["*.gif".to_string()]);
+    }
+
+    #[test]
+    fn parses_upload_with_multiple_files() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "upload",
+            "a.jpg",
+            "b.jpg",
+            "c.jpg",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+        ])
+        .expect("parse should succeed");
+        let Commands::Upload(args) = cli.command else {
+            panic!("expected upload");
+        };
+        assert_eq!(
+            args.files,
+            vec!["a.jpg".to_string(), "b.jpg".to_string(), "c.jpg".to_string()]
+        );
     }
 
     #[test]

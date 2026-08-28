@@ -5,49 +5,136 @@ use aws_sdk_s3::primitives::ByteStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Entry point for the upload command.
-pub async fn run_upload(args: UploadArgs, verbose: bool) -> anyhow::Result<()> {
-    // Validate that the target path exists and is a file.
-    if !args.file.exists() {
-        bail!("file not found: {}", args.file.display());
+/// Returns true if the string contains glob meta characters.
+fn is_glob_pattern(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[')
+}
+
+/// Expand CLI file arguments that may contain wildcards (e.g. "*.gif", "mm*.jpg").
+/// - Plain paths without glob meta are kept as-is.
+/// - Patterns with meta are expanded via `glob`. If nothing matches, an error is returned.
+/// - Deduplicates while preserving order.
+fn expand_file_patterns(patterns: &[String]) -> anyhow::Result<Vec<PathBuf>> {
+    let mut expanded: Vec<PathBuf> = Vec::new();
+    for pat in patterns {
+        if is_glob_pattern(pat) {
+            let entries = glob::glob(pat)
+                .with_context(|| format!("invalid glob pattern: {pat}"))?;
+            let mut matched: Vec<PathBuf> = Vec::new();
+            for entry in entries {
+                matched.push(
+                    entry.with_context(|| format!("failed to read glob result for pattern: {pat}"))?,
+                );
+            }
+            if matched.is_empty() {
+                bail!("no files matched pattern: {pat}");
+            }
+            expanded.extend(matched);
+        } else {
+            expanded.push(PathBuf::from(pat));
+        }
     }
-    if !args.file.is_file() {
-        bail!(
-            "not a file: {} (directories not supported)",
-            args.file.display()
-        );
+    // Deduplicate preserving order
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped = Vec::new();
+    for p in expanded {
+        if seen.insert(p.clone()) {
+            deduped.push(p);
+        }
+    }
+    Ok(deduped)
+}
+
+/// Entry point for the upload command. Supports wildcards such as `*.gif` or `mm*.jpg`.
+pub async fn run_upload(args: UploadArgs, verbose: bool) -> anyhow::Result<()> {
+    // Expand wildcards / shell-expanded lists into a concrete file list.
+    let files = expand_file_patterns(&args.files)?;
+
+    if files.is_empty() {
+        bail!("no files to upload");
+    }
+
+    // --key only makes sense for a single file. With wildcards or multiple
+    // positional files it would be ambiguous which object key to use.
+    if args.key.is_some() && files.len() > 1 {
+        bail!("cannot use --key with multiple files / wildcard patterns; use --folder to set a prefix instead");
+    }
+
+    // Validate each resolved path exists and is a regular file.
+    for file in &files {
+        if !file.exists() {
+            bail!("file not found: {}", file.display());
+        }
+        if !file.is_file() {
+            bail!(
+                "not a file: {} (directories not supported)",
+                file.display()
+            );
+        }
     }
 
     // Derive the S3 endpoint based on account ID or an explicit URL.
     let endpoint_url = endpoint_for(&args.r2)?;
     if verbose {
-        eprintln!(
-            "Endpoint: {}\nBucket: {}\nFile: {}",
-            endpoint_url,
-            args.r2.bucket,
-            args.file.display()
-        );
+        if files.len() == 1 {
+            eprintln!(
+                "Endpoint: {}\nBucket: {}\nFile: {}",
+                endpoint_url,
+                args.r2.bucket,
+                files[0].display()
+            );
+        } else {
+            eprintln!(
+                "Endpoint: {}\nBucket: {}\nFiles: {} ({} matched)",
+                endpoint_url,
+                args.r2.bucket,
+                files
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                files.len()
+            );
+        }
     }
-
-    // Derive the S3 key: --key defaults to filename, then prepend --folder if provided.
-    // e.g. --folder my-new-folder + ./photo.jpg => my-new-folder/photo.jpg
-    //      --folder my-new-folder --key images/photo.jpg => my-new-folder/images/photo.jpg
-    let key = resolve_key(&args.file, args.key, args.folder.as_deref())?;
 
     // Initialize the S3 client with Cloudflare R2 credentials.
     let client = build_client(&endpoint_url, &args.r2.access_key, &args.r2.secret_key).await;
 
-    // Perform the upload.
-    upload(
-        &client,
-        &args.r2.bucket,
-        &key,
-        &args.file,
-        args.content_type,
-        args.description,
-        verbose,
-    )
-    .await
+    // Upload each file sequentially. Content-Type is auto-detected per file
+    // unless an override is supplied, in which case it is reused for all.
+    let mut uploaded = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for file in &files {
+        // Derive the S3 key: --key defaults to filename, then prepend --folder if provided.
+        // e.g. --folder my-new-folder + ./photo.jpg => my-new-folder/photo.jpg
+        //      --folder my-new-folder --key images/photo.jpg => my-new-folder/images/photo.jpg
+        let key = resolve_key(file, args.key.clone(), args.folder.as_deref())?;
+        let ct = args.content_type.clone();
+        let desc = args.description.clone();
+        match upload(&client, &args.r2.bucket, &key, file, ct, desc, verbose).await {
+            Ok(_) => uploaded += 1,
+            Err(e) => {
+                let msg = format!("{}: {e:#}", file.display());
+                eprintln!("Failed to upload {msg}");
+                failures.push(msg);
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        bail!(
+            "uploaded {uploaded}/{} file(s); failures:\n{}",
+            files.len(),
+            failures.join("\n")
+        );
+    }
+
+    if verbose && files.len() > 1 {
+        eprintln!("Uploaded {uploaded} file(s) to s3://{}/{}", args.r2.bucket, args.folder.as_deref().unwrap_or(""));
+    }
+
+    Ok(())
 }
 
 /// Entry point for the download command.
@@ -1012,6 +1099,78 @@ mod tests {
         let out = format_stat_human(&info);
         assert!(out.contains("Metadata:"));
         assert!(out.contains("custom: val"));
+    }
+
+    #[test]
+    fn detects_glob_pattern() {
+        assert!(is_glob_pattern("*.gif"));
+        assert!(is_glob_pattern("mm*.jpg"));
+        assert!(is_glob_pattern("file?.txt"));
+        assert!(is_glob_pattern("a[bc].txt"));
+        assert!(!is_glob_pattern("photo.jpg"));
+        assert!(!is_glob_pattern("a/b/photo.jpg"));
+    }
+
+    #[test]
+    fn expands_wildcard_patterns() {
+        let dir = std::env::temp_dir().join(format!(
+            "cloudflare_r2_test_wildcard_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["a.gif", "b.gif", "mm1.jpg", "mm2.jpg", "note.txt"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        // *.gif
+        let pat = dir.join("*.gif").to_string_lossy().to_string();
+        let res = expand_file_patterns(&[pat]).unwrap();
+        let mut names: Vec<String> = res
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["a.gif".to_string(), "b.gif".to_string()]);
+
+        // mm*.jpg
+        let pat2 = dir.join("mm*.jpg").to_string_lossy().to_string();
+        let res2 = expand_file_patterns(&[pat2]).unwrap();
+        let mut names2: Vec<String> = res2
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names2.sort();
+        assert_eq!(names2, vec!["mm1.jpg".to_string(), "mm2.jpg".to_string()]);
+
+        // plain file without glob stays literal
+        let plain = dir.join("note.txt").to_string_lossy().to_string();
+        let res3 = expand_file_patterns(&[plain.clone()]).unwrap();
+        assert_eq!(res3.len(), 1);
+        assert_eq!(res3[0].file_name().unwrap().to_string_lossy(), "note.txt");
+
+        // no match -> error
+        let no_match = dir.join("nope*.gif").to_string_lossy().to_string();
+        assert!(expand_file_patterns(&[no_match]).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expands_multiple_patterns_and_dedups() {
+        let dir = std::env::temp_dir().join(format!(
+            "cloudflare_r2_test_dedup_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.gif"), b"x").unwrap();
+        std::fs::write(dir.join("b.gif"), b"x").unwrap();
+        let pat_star = dir.join("*.gif").to_string_lossy().to_string();
+        let pat_explicit = dir.join("a.gif").to_string_lossy().to_string();
+        let res = expand_file_patterns(&[pat_star, pat_explicit]).unwrap();
+        // should deduplicate a.gif
+        assert_eq!(res.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
