@@ -371,23 +371,66 @@ pub async fn run_download(args: DownloadArgs, verbose: bool) -> anyhow::Result<(
     Ok(())
 }
 
-/// Entry point for the delete command.
+/// Entry point for the delete command. Supports wildcards such as `*.gif` or `mm*.jpg`
+/// against remote keys (listed via ListObjectsV2 and filtered locally).
 pub async fn run_delete(args: DeleteArgs, verbose: bool) -> anyhow::Result<()> {
-    let key = args.key.trim();
-    if key.is_empty() {
+    if args.keys.is_empty() {
         bail!("object key must not be empty");
     }
 
     let endpoint_url = endpoint_for(&args.r2)?;
     if verbose {
-        eprintln!(
-            "Endpoint: {}\nBucket: {}\nKey: {}",
-            endpoint_url, args.r2.bucket, key
-        );
+        eprintln!("Endpoint: {}\nBucket: {}", endpoint_url, args.r2.bucket);
     }
 
     let client = build_client(&endpoint_url, &args.r2.access_key, &args.r2.secret_key).await;
-    delete(&client, &args.r2.bucket, key, verbose).await
+
+    // Expand wildcards against remote bucket; literals pass through unchanged.
+    let keys = expand_remote_keys(&client, &args.r2.bucket, &args.keys).await?;
+
+    if keys.is_empty() {
+        bail!("no objects to delete");
+    }
+
+    if verbose {
+        if keys.len() == 1 {
+            eprintln!("Key: {}", keys[0]);
+        } else {
+            eprintln!("Keys: {} ({} matched)", keys.join(", "), keys.len());
+        }
+    }
+
+    let mut deleted = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+
+    for key in &keys {
+        match delete(&client, &args.r2.bucket, key, verbose).await {
+            Ok(_) => deleted += 1,
+            Err(e) => {
+                let msg = format!("{key}: {e:#}");
+                eprintln!("Failed to delete {msg}");
+                failures.push(msg.clone());
+                // For single-key mode, fail fast with original error (preserves "file not found" etc.)
+                if keys.len() == 1 {
+                    bail!("{msg}");
+                }
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        bail!(
+            "deleted {deleted}/{} object(s); failures:\n{}",
+            keys.len(),
+            failures.join("\n")
+        );
+    }
+
+    if verbose && keys.len() > 1 {
+        eprintln!("Deleted {deleted} object(s) from s3://{}/", args.r2.bucket);
+    }
+
+    Ok(())
 }
 
 /// Deletes an object from R2.
@@ -401,7 +444,14 @@ async fn delete(
     match client.head_object().bucket(bucket).key(key).send().await {
         Ok(_) => {}
         Err(aws_sdk_s3::error::SdkError::ServiceError(error)) if error.err().is_not_found() => {
-            bail!("file not found: s3://{bucket}/{key}");
+            // Hint about shell expansion: `delete *.jpg` without quotes expands locally to e.g. `test.jpg`.
+            // If a local file with the same name exists, suggest quoting the pattern.
+            let hint = if Path::new(key).exists() {
+                format!(" (hint: local file '{}' exists — if you meant a wildcard like '*.jpg', quote it as \"*.jpg\" to prevent shell expansion)", key)
+            } else {
+                String::new()
+            };
+            bail!("file not found: s3://{bucket}/{key}{hint}");
         }
         Err(error) => {
             return Err(error).context(
@@ -538,7 +588,12 @@ async fn download(
     let response = match client.get_object().bucket(bucket).key(key).send().await {
         Ok(response) => response,
         Err(aws_sdk_s3::error::SdkError::ServiceError(error)) if error.err().is_no_such_key() => {
-            bail!("object not found in s3://{bucket}/{key}");
+            let hint = if Path::new(key).exists() {
+                format!(" (hint: local file '{}' exists — if you meant a wildcard like '*.jpg', quote it as \"*.jpg\" to prevent shell expansion)", key)
+            } else {
+                String::new()
+            };
+            bail!("object not found in s3://{bucket}/{key}{hint}");
         }
         Err(error) => {
             return Err(error).context(

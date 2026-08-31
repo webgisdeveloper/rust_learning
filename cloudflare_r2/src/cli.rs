@@ -116,6 +116,7 @@ pub struct DownloadArgs {
 
     /// Object key(s) in R2 to download. Supports wildcards (e.g. "*.gif", "mm*.jpg", "images/*.jpg") to download all matching objects.
     /// Quoted patterns (e.g. "*.gif") are expanded against remote keys; shell-expanded lists are also supported.
+    /// IMPORTANT: quote wildcards like '*.jpg' to prevent shell from expanding to local filenames (e.g. use "*.jpg" not *.jpg if a local test.jpg exists).
     #[arg(value_name = "KEY", required = true)]
     pub keys: Vec<String>,
 
@@ -134,9 +135,11 @@ pub struct DeleteArgs {
     #[command(flatten)]
     pub r2: R2Args,
 
-    /// Object key in R2 to delete.
-    #[arg(value_name = "KEY")]
-    pub key: String,
+    /// Object key(s) in R2 to delete. Supports wildcards (e.g. "*.gif", "mm*.jpg", "images/*.jpg") to delete all matching objects.
+    /// Quoted patterns (e.g. "*.gif") are expanded against remote keys; shell-expanded lists are also supported.
+    /// IMPORTANT: quote wildcards like '*.jpg' to prevent shell from expanding to local filenames (e.g. use "*.jpg" not *.jpg if a local test.jpg exists) — otherwise the literal local name (e.g. test.jpg) will be deleted remotely instead of all .jpg objects.
+    #[arg(value_name = "KEY", required = true)]
+    pub keys: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -394,8 +397,49 @@ mod tests {
         let Commands::Delete(args) = cli.command else {
             panic!("expected delete");
         };
-        assert_eq!(args.key, "images/photo.jpg");
+        assert_eq!(args.keys, vec!["images/photo.jpg".to_string()]);
         assert_eq!(args.r2.bucket, "my-bucket");
+    }
+
+    #[test]
+    fn parses_delete_with_wildcard() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "delete",
+            "*.gif",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+        ])
+        .expect("parse should succeed");
+        let Commands::Delete(args) = cli.command else {
+            panic!("expected delete");
+        };
+        assert_eq!(args.keys, vec!["*.gif".to_string()]);
+    }
+
+    #[test]
+    fn parses_delete_with_multiple_keys() {
+        let cli = Cli::try_parse_from([
+            "cloudflare_r2",
+            "delete",
+            "a.jpg",
+            "b.jpg",
+            "--bucket",
+            "my-bucket",
+            "--access-key",
+            "ak",
+            "--secret-key",
+            "sk",
+        ])
+        .expect("parse should succeed");
+        let Commands::Delete(args) = cli.command else {
+            panic!("expected delete");
+        };
+        assert_eq!(args.keys, vec!["a.jpg".to_string(), "b.jpg".to_string()]);
     }
 
     #[test]
