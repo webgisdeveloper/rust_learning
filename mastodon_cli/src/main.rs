@@ -31,6 +31,8 @@
 mod api;
 mod cli;
 mod format;
+mod spell;
+
 
 // Bring names into scope for ergonomic use in this file.
 // `use api::{api_url, Account, ...}` avoids writing `api::api_url` everywhere.
@@ -207,7 +209,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             replace_emojis(&corrected)
         };
 
+        // --- Spell check (US English) before posting ---
+        let custom_dict_path = args.custom_dict.as_ref().map(std::path::Path::new);
+        let spell_enabled = args.spell_check
+            && !args.no_spell_check
+            && std::env::var("MASTODON_SPELL_CHECK")
+                .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+                .unwrap_or(true);
+
+        let final_status = if spell_enabled {
+            if io::stdin().is_terminal() {
+                spell::check_and_correct_interactively(&final_status, custom_dict_path)?
+            } else {
+                let warnings = spell::check_message(&final_status, custom_dict_path);
+                for warning in &warnings {
+                    eprintln!(
+                        "warning: potential misspelling \"{}\" detected (suggestions: {})",
+                        warning.word,
+                        if warning.suggestions.is_empty() {
+                            "none".to_string()
+                        } else {
+                            warning.suggestions.join(", ")
+                        }
+                    );
+                }
+                final_status
+            }
+        } else {
+            final_status
+        };
+
         // Optional: upload an image. The Mastodon API requires a two-step
+
         // process: 1) POST /api/v1/media → get media ID, 2) POST /api/v1/statuses
         // with that ID. `upload_media` is `async` so we `.await` it.
         let mut media_ids = None;

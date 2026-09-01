@@ -62,4 +62,19 @@ pub(crate) struct Args {
     ///   our code even runs.
     #[arg(short, long, alias = "limit", default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=40))]
     pub(crate) list: u32,
+
+    /// Perform US English spell check before posting (enabled by default).
+    ///
+    /// Can be explicitly enabled or set to false: `--spell-check=false`.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub(crate) spell_check: bool,
+
+    /// Explicitly disable US English spell check before posting.
+    #[arg(long)]
+    pub(crate) no_spell_check: bool,
+
+    /// Path to a custom user dictionary file (one word per line).
+    #[arg(long)]
+    pub(crate) custom_dict: Option<String>,
 }
+

@@ -14,13 +14,15 @@
 
 ## Project Structure (Phase 0)
 - `src/main.rs` — `DEFAULT_INSTANCE`, `resolve_instance()`, `#[tokio::main]`, `Client` reuse, POST/GET branch
-- `src/cli.rs` — `Args: Parser` (`message?`, `image?`, `token?`, `instance?`, `list` 1..=40 default 5)
+- `src/cli.rs` — `Args: Parser` (`message?`, `image?`, `token?`, `instance?`, `list` 1..=40 default 5, `spell_check`, `no_spell_check`, `custom_dict`)
 - `src/api.rs` — `normalize_instance`, `api_url`, `StatusRequest`/`Account`/`Status`, `upload_media` (multipart, Bearer)
 - `src/format.rs` — `replace_emojis` (`OnceLock<Regex>`), `clean_html`, `wrap_text` (`UnicodeWidthStr`), `format_status` (76/72, `saturating_sub`)
+- `src/spell.rs` — US English (`en_US`) spell checker, tokenization (filtering URLs, handles, hashtags, emojis, acronyms), edit-distance suggestions, personal/custom dictionary persistence
 - `pub(crate)` throughout; `Cargo.toml` edition 2024
 
 ## Key Logic
 - **Emoji**: `emojis::get_by_shortcode`, single-pass `:([a-z0-9_]+):`, `EMOJI_RE: OnceLock`, preserve unknown
+- **Spell Check**: US English (`en_US`) default pre-post validation before media upload/POST; ignores URLs, handles, hashtags, emojis, acronyms; interactive terminal correction prompt; opt-out via `--no-spell-check` or `MASTODON_SPELL_CHECK=0`
 - **HTML**: `<[^>]*>` strip + `html_escape::decode_html_entities`
 - **Wrap**: `UnicodeWidthStr::width`, word-boundary, blank-line preserve, overlong word emit
 - **Box**: `format_status` → `┌── Status #N` / `🧵`/`🖼️` row / `├─┤` / padded `│` lines / `└──┘`
@@ -28,7 +30,8 @@
 - **Upload**: `fs::read` → `Part::bytes` → `Form` → `POST /api/v1/media` → `MediaResponse.id` → `StatusRequest.media_ids`
 
 ## Conventions
-- Reuse `Client::new()`; validate via `clap value_parser`; keep `format.rs` pure/testable
+- Reuse `Client::new()`; validate via `clap value_parser`; keep `format.rs` and `spell.rs` pure/testable
 
 ## Verification
-- `cargo check` / `cargo test` (9 tests: emoji/html/wrap/box/URL) / `cargo build --release`
+- `cargo check` / `cargo test` (21 tests: emoji/html/wrap/box/URL/spell check/tokenization/custom dict) / `cargo build --release`
+
