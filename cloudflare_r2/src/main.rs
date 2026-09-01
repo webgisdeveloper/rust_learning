@@ -1,4 +1,8 @@
 mod cli;
+mod client;
+mod commands;
+mod format;
+mod glob;
 mod r2;
 
 use anyhow::Result;

@@ -275,7 +275,11 @@ mod tests {
         };
         assert_eq!(
             args.files,
-            vec!["a.jpg".to_string(), "b.jpg".to_string(), "c.jpg".to_string()]
+            vec![
+                "a.jpg".to_string(),
+                "b.jpg".to_string(),
+                "c.jpg".to_string()
+            ]
         );
     }
 
@@ -371,10 +375,7 @@ mod tests {
         let Commands::Download(args) = cli.command else {
             panic!("expected download");
         };
-        assert_eq!(
-            args.keys,
-            vec!["a.jpg".to_string(), "b.jpg".to_string()]
-        );
+        assert_eq!(args.keys, vec!["a.jpg".to_string(), "b.jpg".to_string()]);
     }
 
     #[test]
