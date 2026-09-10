@@ -100,6 +100,11 @@ pub(crate) struct Status {
     pub(crate) media_attachments: Vec<MediaAttachment>,
     /// If `Some`, this status is a reply (used to show the 🧵 indicator).
     pub(crate) in_reply_to_id: Option<String>,
+    /// Creation timestamp from the API (RFC 3339, e.g. `"2024-11-05T12:34:56.000Z"`).
+    /// `#[serde(default)]` keeps manually-constructed `Status` values in tests
+    /// compiling when the field is missing.
+    #[serde(default)]
+    pub(crate) created_at: String,
 }
 
 /// Placeholder for a media attachment.

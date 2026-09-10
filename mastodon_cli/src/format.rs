@@ -15,6 +15,8 @@ use regex::Regex;
 use std::sync::OnceLock;
 use unicode_width::UnicodeWidthStr;
 
+use chrono::{DateTime, Datelike, Local};
+
 use crate::api::Status;
 
 // ---------------------------------------------------------------------------
@@ -235,6 +237,57 @@ pub(crate) fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Relative timestamps — friendly "today / N days ago / Mon D" labels
+// ---------------------------------------------------------------------------
+
+/// Converts a Mastodon `created_at` (RFC 3339) into a short relative label.
+///
+/// Rules (per list-view request):
+/// - same calendar day (local time) → `"today"`
+/// - 1..=7 calendar days ago → `"1 day ago"` … `"7 days ago"`
+/// - older than 7 days → `"Mon D"` (e.g. `"Sep 5"`, no year)
+/// - unparseable/empty/future → `"today"` for future, `""` for bad input
+///   (empty hides the label so the header stays clean).
+///
+/// Learner notes:
+/// - Mastodon sends UTC (`...Z`); we convert to `Local` so "today" matches
+///   the user's calendar day, not UTC's.
+/// - Comparing `NaiveDate`s (not durations) means a post from 11pm yesterday
+///   still shows "1 day ago" even if only 2 hours have passed.
+pub(crate) fn relative_timestamp(created_at: &str) -> String {
+    relative_timestamp_with_now(created_at, Local::now())
+}
+
+/// Testable core: same logic as [`relative_timestamp`] but with injectable `now`.
+///
+/// Takes `now` as a parameter so unit tests don't depend on the real clock.
+pub(crate) fn relative_timestamp_with_now(
+    created_at: &str,
+    now: DateTime<Local>,
+) -> String {
+    if created_at.trim().is_empty() {
+        return String::new();
+    }
+    let parsed = match DateTime::parse_from_rfc3339(created_at) {
+        Ok(dt) => dt.with_timezone(&Local),
+        Err(_) => return String::new(),
+    };
+    let days_ago = (now.date_naive() - parsed.date_naive()).num_days();
+    if days_ago <= 0 {
+        // Same day or (clock skew) future → "today".
+        "today".to_string()
+    } else if days_ago == 1 {
+        "1 day ago".to_string()
+    } else if (2..=7).contains(&days_ago) {
+        format!("{days_ago} days ago")
+    } else {
+        // Older than 7 days → "Month day", e.g. "Sep 5".
+        // Build manually (`%b` + day number) instead of `%-d` for Windows compat.
+        format!("{} {}", parsed.format("%b"), parsed.day())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Box rendering — the pretty terminal UI
 // ---------------------------------------------------------------------------
 
@@ -263,8 +316,13 @@ pub(crate) fn format_status(index: usize, status: &Status) -> String {
     let inner_width: usize = box_width - 4;
     let mut output = String::new();
 
-    // --- 1. Top border with title ---
-    let header_title = format!(" Status #{} ", index + 1);
+    // --- 1. Top border with title (includes relative timestamp) ---
+    let time_label = relative_timestamp(&status.created_at);
+    let header_title = if time_label.is_empty() {
+        format!(" Status #{} ", index + 1)
+    } else {
+        format!(" Status #{} \u{00B7} {} ", index + 1, time_label)
+    };
     let title_len = UnicodeWidthStr::width(header_title.as_str());
     // Remaining dashes: box_width - "┌──" (3?) actually "┌──" + title + "┐" accounting.
     // We use saturating_sub to avoid underflow if title is absurdly long.
@@ -317,6 +375,7 @@ mod tests {
             content: content.to_string(),
             media_attachments: vec![],
             in_reply_to_id: None,
+            created_at: String::new(),
         }
     }
 
@@ -417,5 +476,76 @@ mod tests {
         let (_, warnings) = replace_emojis_with_warnings("Hi :unknown_shortcode:");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].suggestions.is_empty());
+    }
+
+    // Helper: fixed "now" (local) for deterministic relative-timestamp tests.
+    fn test_now() -> DateTime<Local> {
+        DateTime::parse_from_rfc3339("2026-09-10T12:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Local)
+    }
+
+    #[test]
+    fn relative_today() {
+        let now = test_now();
+        let created = now.to_rfc3339();
+        assert_eq!(relative_timestamp_with_now(&created, now), "today");
+    }
+
+    #[test]
+    fn relative_one_to_seven_days() {
+        let now = test_now();
+        for n in 1..=7 {
+            let created = (now - chrono::Duration::days(n)).to_rfc3339();
+            let label = relative_timestamp_with_now(&created, now);
+            if n == 1 {
+                assert_eq!(label, "1 day ago", "n={n}");
+            } else {
+                assert_eq!(label, format!("{n} days ago"), "n={n}");
+            }
+        }
+    }
+
+    #[test]
+    fn relative_older_than_seven_days_shows_month_day() {
+        let now = test_now();
+        // 30 days before 2026-09-10 → August, day 11.
+        let created = (now - chrono::Duration::days(30)).to_rfc3339();
+        let label = relative_timestamp_with_now(&created, now);
+        assert!(
+            label.starts_with("Aug "),
+            "expected 'Aug D' for old post, got {label:?}"
+        );
+        assert!(!label.contains("2026"), "should not include year: {label:?}");
+    }
+
+    #[test]
+    fn relative_bad_input_returns_empty() {
+        let now = test_now();
+        assert_eq!(relative_timestamp_with_now("", now), "");
+        assert_eq!(relative_timestamp_with_now("not-a-date", now), "");
+    }
+
+    #[test]
+    fn header_includes_relative_timestamp() {
+        let now = Local::now();
+        let created = now.to_rfc3339();
+        let s = Status {
+            created_at: created,
+            ..status("Hello world!")
+        };
+        let formatted = format_status(0, &s);
+        assert!(
+            formatted.contains("Status #1 \u{00B7} today"),
+            "header should show timestamp: {formatted:?}"
+        );
+    }
+
+    #[test]
+    fn header_without_timestamp_omits_separator() {
+        // Empty created_at (e.g. hand-built Status) → old header, no separator.
+        let formatted = format_status(0, &status("Hello world!"));
+        assert!(formatted.starts_with("\u{250C}\u{2500}\u{2500} Status #1 "));
+        assert!(!formatted.contains("\u{00B7}"));
     }
 }
