@@ -1,0 +1,8 @@
+[package]
+name = "rust_julia_3d"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Feature "sync-rt" provides the synchronous Julia runtime wrapper
+jlrs = { version = "0.24", features = ["local-rt"] }
