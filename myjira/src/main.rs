@@ -184,7 +184,7 @@ fn print_table(issues: &[Issue], base_url: &str) {
         return;
     }
     println!(
-        "{:<10} {:<12} {:<8} {:<summary_width$} URL",
+        "{:<10} {:<12}{:<8} {:<summary_width$} URL",
         "KEY",
         "STATUS",
         "PRIORITY",
