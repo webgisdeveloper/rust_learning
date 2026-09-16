@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 
 const FIELDS: &[&str] = &["summary", "status", "priority"];
-const SUMMARY_WIDTH: usize = 32;
+const SUMMARY_WIDTH: usize = 20;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Issue {
@@ -183,16 +183,25 @@ fn print_table(issues: &[Issue], base_url: &str) {
         println!("No issues found.");
         return;
     }
-    println!("{:<14} {:<14} {:<10} SUMMARY", "KEY", "STATUS", "PRIORITY");
+    println!(
+        "{:<10} {:<12} {:<8} {:<summary_width$} URL",
+        "KEY",
+        "STATUS",
+        "PRIORITY",
+        "SUMMARY",
+        summary_width = SUMMARY_WIDTH,
+    );
     for issue in issues {
         println!(
-            "{:<14} {:<14} {:<10} {}",
+            "{:<10} {:<12} {:<8} {:<summary_width$} {}/browse/{}",
             issue.key,
             field_name(&issue.fields.status),
             field_name(&issue.fields.priority),
-            truncate_summary(issue.fields.summary.as_deref().unwrap_or(""))
+            truncate_summary(issue.fields.summary.as_deref().unwrap_or("")),
+            base_url.trim_end_matches('/'),
+            issue.key,
+            summary_width = SUMMARY_WIDTH,
         );
-        println!("  {}/browse/{}", base_url.trim_end_matches('/'), issue.key);
     }
 }
 
@@ -200,7 +209,11 @@ fn truncate_summary(summary: &str) -> String {
     let mut characters = summary.chars();
     let shortened: String = characters.by_ref().take(SUMMARY_WIDTH).collect();
     if characters.next().is_some() {
-        format!("{shortened}…")
+        let visible: String = shortened
+            .chars()
+            .take(SUMMARY_WIDTH.saturating_sub(1))
+            .collect();
+        format!("{visible}…")
     } else {
         shortened
     }
@@ -293,11 +306,15 @@ mod tests {
     }
 
     #[test]
-    fn truncates_terminal_summaries() {
+    fn truncates_summaries_to_the_table_width() {
         assert_eq!(truncate_summary("short"), "short");
         assert_eq!(
-            truncate_summary(&"a".repeat(33)),
-            format!("{}…", "a".repeat(32))
+            truncate_summary(&"a".repeat(SUMMARY_WIDTH)),
+            "a".repeat(SUMMARY_WIDTH)
+        );
+        assert_eq!(
+            truncate_summary(&"a".repeat(SUMMARY_WIDTH + 1)),
+            format!("{}…", "a".repeat(SUMMARY_WIDTH - 1))
         );
     }
 }
