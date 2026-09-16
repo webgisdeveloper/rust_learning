@@ -216,6 +216,17 @@ fn status_emoji(status: &Option<Named>) -> &'static str {
     }
 }
 
+fn status_rank(status: &Option<Named>) -> u8 {
+    match field_name(status).to_ascii_lowercase().as_str() {
+        "in progress" => 0,
+        "review" => 1,
+        "to do" => 2,
+        "on hold" => 3,
+        "done" => 4,
+        _ => 5,
+    }
+}
+
 fn truncate_summary(summary: &str) -> String {
     let mut characters = summary.chars();
     let shortened: String = characters.by_ref().take(SUMMARY_WIDTH).collect();
@@ -250,7 +261,7 @@ async fn main() {
         let base_url = required_env("JIRA_BASE_URL")?;
         let email = required_env("JIRA_USER_EMAIL")?;
         let token = required_env("JIRA_API_TOKEN")?;
-        let issues = search(
+        let mut issues = search(
             &Client::new(),
             &base_url,
             &email,
@@ -259,6 +270,7 @@ async fn main() {
             config.max,
         )
         .await?;
+        issues.sort_by_key(|issue| status_rank(&issue.fields.status));
         if config.json {
             println!(
                 "{}",
@@ -345,5 +357,18 @@ mod tests {
                 marker
             );
         }
+    }
+
+    #[test]
+    fn ranks_statuses_for_display() {
+        let status = |name: &str| {
+            Some(Named {
+                name: Some(name.into()),
+            })
+        };
+        assert!(status_rank(&status("In Progress")) < status_rank(&status("Review")));
+        assert!(status_rank(&status("Review")) < status_rank(&status("To Do")));
+        assert!(status_rank(&status("To Do")) < status_rank(&status("On Hold")));
+        assert!(status_rank(&status("On Hold")) < status_rank(&status("Done")));
     }
 }
