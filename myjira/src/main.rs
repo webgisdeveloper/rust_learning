@@ -1,7 +1,7 @@
 //! List Jira issues assigned to the current user (or a supplied account ID).
 //!
 //! Required environment: JIRA_BASE_URL, JIRA_USER_EMAIL, JIRA_API_TOKEN.
-//! Usage: myjira [me|ACCOUNT_ID] [--json] [--max N] [--jql JQL]
+//! Usage: myjira [me|ACCOUNT_ID] [--json] [--max N] [--jql JQL] [--key ISSUE_KEY]
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -53,12 +53,13 @@ struct Config {
     assignee: String,
     json: bool,
     jql: Option<String>,
+    key: Option<String>,
     max: usize,
     help: bool,
 }
 
 fn usage() {
-    eprintln!("Usage: myjira [me|ACCOUNT_ID] [--json] [--max N] [--jql JQL]");
+    eprintln!("Usage: myjira [me|ACCOUNT_ID] [--json] [--max N] [--jql JQL] [--key ISSUE_KEY]");
     eprintln!("  Defaults to me. Jira Cloud requires an account ID for another user.");
 }
 
@@ -67,6 +68,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         assignee: "me".into(),
         json: false,
         jql: None,
+        key: None,
         max: 100,
         help: false,
     };
@@ -96,6 +98,18 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                         .to_string(),
                 );
             }
+            "--key" => {
+                i += 1;
+                let key = args.get(i).ok_or("--key requires an issue key")?;
+                if !key.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || character == '-' || character == '_'
+                }) {
+                    return Err(
+                        "--key must contain only letters, numbers, hyphens, or underscores".into(),
+                    );
+                }
+                config.key = Some(key.to_string());
+            }
             flag if flag.starts_with('-') => return Err(format!("Unknown flag: {flag}")),
             value if assignee_seen => return Err(format!("Unexpected argument: {value}")),
             value => {
@@ -106,6 +120,36 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         i += 1;
     }
     Ok(config)
+}
+
+async fn get_issue(
+    client: &Client,
+    base_url: &str,
+    email: &str,
+    token: &str,
+    key: &str,
+) -> Result<Issue, String> {
+    let url = format!(
+        "{}/rest/api/3/issue/{key}?fields=summary,status,priority",
+        base_url.trim_end_matches('/')
+    );
+    let response = client
+        .get(url)
+        .basic_auth(email, Some(token))
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach Jira: {error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "Jira issue lookup failed (HTTP {status}): {}",
+            response.text().await.unwrap_or_default()
+        ));
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| format!("Jira returned invalid issue JSON: {error}"))
 }
 
 fn required_env(name: &str) -> Result<String, String> {
@@ -205,6 +249,25 @@ fn print_table(issues: &[Issue], base_url: &str) {
     }
 }
 
+fn print_issue_details(issue: &Issue, base_url: &str) {
+    println!("Key:      {}", issue.key);
+    println!(
+        "Summary:  {}",
+        issue.fields.summary.as_deref().unwrap_or("-")
+    );
+    println!(
+        "Status:   {} {}",
+        status_emoji(&issue.fields.status),
+        field_name(&issue.fields.status)
+    );
+    println!("Priority: {}", field_name(&issue.fields.priority));
+    println!(
+        "URL:      {}/browse/{}",
+        base_url.trim_end_matches('/'),
+        issue.key
+    );
+}
+
 fn status_emoji(status: &Option<Named>) -> &'static str {
     match field_name(status).to_ascii_lowercase().as_str() {
         "done" => "✅",
@@ -261,6 +324,18 @@ async fn main() {
         let base_url = required_env("JIRA_BASE_URL")?;
         let email = required_env("JIRA_USER_EMAIL")?;
         let token = required_env("JIRA_API_TOKEN")?;
+        if let Some(key) = &config.key {
+            let issue = get_issue(&Client::new(), &base_url, &email, &token, key).await?;
+            if config.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&issue).map_err(|e| e.to_string())?
+                );
+            } else {
+                print_issue_details(&issue, &base_url);
+            }
+            return Ok(());
+        }
         let mut issues = search(
             &Client::new(),
             &base_url,
@@ -307,10 +382,17 @@ mod tests {
                 assignee: "abc123".into(),
                 json: true,
                 jql: None,
+                key: None,
                 max: 12,
                 help: false
             }
         );
+    }
+
+    #[test]
+    fn parses_issue_key() {
+        let config = parse_args(&["--key".into(), "PROJ-123".into()]).unwrap();
+        assert_eq!(config.key.as_deref(), Some("PROJ-123"));
     }
 
     #[test]
