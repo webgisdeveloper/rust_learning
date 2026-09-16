@@ -193,15 +193,26 @@ fn print_table(issues: &[Issue], base_url: &str) {
     );
     for issue in issues {
         println!(
-            "{:<10} {:<12} {:<8} {:<summary_width$} {}/browse/{}",
+            "{:<10} {}          {:<8} {:<summary_width$} {}/browse/{}",
             issue.key,
-            field_name(&issue.fields.status),
+            status_emoji(&issue.fields.status),
             field_name(&issue.fields.priority),
             truncate_summary(issue.fields.summary.as_deref().unwrap_or("")),
             base_url.trim_end_matches('/'),
             issue.key,
             summary_width = SUMMARY_WIDTH,
         );
+    }
+}
+
+fn status_emoji(status: &Option<Named>) -> &'static str {
+    match field_name(status).to_ascii_lowercase().as_str() {
+        "done" => "✅",
+        "in progress" => "🔄",
+        "to do" => "📝",
+        "review" => "👀",
+        "on hold" => "⏸️",
+        _ => "❔",
     }
 }
 
@@ -316,5 +327,23 @@ mod tests {
             truncate_summary(&"a".repeat(SUMMARY_WIDTH + 1)),
             format!("{}…", "a".repeat(SUMMARY_WIDTH - 1))
         );
+    }
+
+    #[test]
+    fn uses_compact_status_markers() {
+        for (name, marker) in [
+            ("Done", "✅"),
+            ("In Progress", "🔄"),
+            ("To Do", "📝"),
+            ("Review", "👀"),
+            ("On Hold", "⏸️"),
+        ] {
+            assert_eq!(
+                status_emoji(&Some(Named {
+                    name: Some(name.into())
+                })),
+                marker
+            );
+        }
     }
 }
