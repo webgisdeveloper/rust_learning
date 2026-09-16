@@ -1,7 +1,7 @@
 //! List Jira issues assigned to the current user (or a supplied account ID).
 //!
 //! Required environment: JIRA_BASE_URL, JIRA_USER_EMAIL, JIRA_API_TOKEN.
-//! Usage: myjira [me|ACCOUNT_ID] [--json] [--max N] [--jql JQL] [--key ISSUE_KEY]
+//! Usage: myjira [me|ACCOUNT_ID] [--json] [--max N] [--jql JQL] [--key ISSUE_KEY] [--comment TEXT]
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,28 @@ struct Fields {
 #[derive(Debug, Deserialize, Serialize)]
 struct Named {
     name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct User {
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Comment {
+    author: Option<User>,
+    body: Option<serde_json::Value>,
+    created: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CommentPage {
+    #[serde(default)]
+    comments: Vec<Comment>,
+    #[serde(rename = "startAt")]
+    start_at: Option<usize>,
+    total: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -54,12 +76,15 @@ struct Config {
     json: bool,
     jql: Option<String>,
     key: Option<String>,
+    comment: Option<String>,
     max: usize,
     help: bool,
 }
 
 fn usage() {
-    eprintln!("Usage: myjira [me|ACCOUNT_ID] [--json] [--max N] [--jql JQL] [--key ISSUE_KEY]");
+    eprintln!(
+        "Usage: myjira [me|ACCOUNT_ID] [--json] [--max N] [--jql JQL] [--key ISSUE_KEY] [--comment TEXT]"
+    );
     eprintln!("  Defaults to me. Jira Cloud requires an account ID for another user.");
 }
 
@@ -69,6 +94,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         json: false,
         jql: None,
         key: None,
+        comment: None,
         max: 100,
         help: false,
     };
@@ -110,6 +136,14 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                 }
                 config.key = Some(key.to_string());
             }
+            "--comment" => {
+                i += 1;
+                let comment = args.get(i).ok_or("--comment requires text")?;
+                if comment.trim().is_empty() {
+                    return Err("--comment requires non-empty text".into());
+                }
+                config.comment = Some(comment.to_string());
+            }
             flag if flag.starts_with('-') => return Err(format!("Unknown flag: {flag}")),
             value if assignee_seen => return Err(format!("Unexpected argument: {value}")),
             value => {
@@ -118,6 +152,9 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             }
         }
         i += 1;
+    }
+    if config.comment.is_some() && config.key.is_none() {
+        return Err("--comment requires --key ISSUE_KEY".into());
     }
     Ok(config)
 }
@@ -150,6 +187,86 @@ async fn get_issue(
         .json()
         .await
         .map_err(|error| format!("Jira returned invalid issue JSON: {error}"))
+}
+
+async fn get_comments(
+    client: &Client,
+    base_url: &str,
+    email: &str,
+    token: &str,
+    key: &str,
+) -> Result<Vec<Comment>, String> {
+    let mut comments = Vec::new();
+    let mut start_at = 0;
+    loop {
+        let url = format!(
+            "{}/rest/api/3/issue/{key}/comment?startAt={start_at}&maxResults=100",
+            base_url.trim_end_matches('/'),
+        );
+        let response = client
+            .get(url)
+            .basic_auth(email, Some(token))
+            .send()
+            .await
+            .map_err(|error| format!("Could not reach Jira: {error}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!(
+                "Jira comment lookup failed (HTTP {status}): {}",
+                response.text().await.unwrap_or_default()
+            ));
+        }
+        let page: CommentPage = response
+            .json()
+            .await
+            .map_err(|error| format!("Jira returned invalid comment JSON: {error}"))?;
+        let page_start = page.start_at.unwrap_or(start_at);
+        let page_count = page.comments.len();
+        comments.extend(page.comments);
+        if page_count == 0 || page_start + page_count >= page.total.unwrap_or(usize::MAX) {
+            return Ok(comments);
+        }
+        start_at = page_start + page_count;
+    }
+}
+
+async fn add_comment(
+    client: &Client,
+    base_url: &str,
+    email: &str,
+    token: &str,
+    key: &str,
+    comment: &str,
+) -> Result<(), String> {
+    let url = format!(
+        "{}/rest/api/3/issue/{key}/comment",
+        base_url.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "body": {
+            "type": "doc",
+            "version": 1,
+            "content": comment.lines().map(|line| serde_json::json!({
+                "type": "paragraph",
+                "content": [{"type": "text", "text": line}],
+            })).collect::<Vec<_>>(),
+        }
+    });
+    let response = client
+        .post(url)
+        .basic_auth(email, Some(token))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach Jira: {error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "Jira comment creation failed (HTTP {status}): {}",
+            response.text().await.unwrap_or_default()
+        ));
+    }
+    Ok(())
 }
 
 fn required_env(name: &str) -> Result<String, String> {
@@ -249,7 +366,7 @@ fn print_table(issues: &[Issue], base_url: &str) {
     }
 }
 
-fn print_issue_details(issue: &Issue, base_url: &str) {
+fn print_issue_details(issue: &Issue, comments: &[Comment], base_url: &str) {
     println!("Key:      {}", issue.key);
     println!(
         "Summary:  {}",
@@ -266,6 +383,59 @@ fn print_issue_details(issue: &Issue, base_url: &str) {
         base_url.trim_end_matches('/'),
         issue.key
     );
+    if comments.is_empty() {
+        println!("Comments: none");
+        return;
+    }
+    println!("Comments:");
+    for comment in comments {
+        let author = comment
+            .author
+            .as_ref()
+            .and_then(|author| author.display_name.as_deref())
+            .unwrap_or("Unknown author");
+        let created = comment.created.as_deref().unwrap_or("Unknown date");
+        println!("  {author} — {created}");
+        let body = comment
+            .body
+            .as_ref()
+            .map(adf_text)
+            .filter(|body| !body.is_empty())
+            .unwrap_or_else(|| "-".into());
+        for line in body.lines() {
+            println!("    {line}");
+        }
+    }
+}
+
+fn adf_text(value: &serde_json::Value) -> String {
+    fn append_text(value: &serde_json::Value, output: &mut String) {
+        let Some(object) = value.as_object() else {
+            return;
+        };
+        if let Some(text) = object.get("text").and_then(serde_json::Value::as_str) {
+            output.push_str(text);
+        }
+        if object.get("type").and_then(serde_json::Value::as_str) == Some("hardBreak") {
+            output.push('\n');
+        }
+        if let Some(content) = object.get("content").and_then(serde_json::Value::as_array) {
+            for child in content {
+                append_text(child, output);
+            }
+        }
+        if matches!(
+            object.get("type").and_then(serde_json::Value::as_str),
+            Some("paragraph" | "heading" | "listItem")
+        ) && !output.ends_with('\n')
+        {
+            output.push('\n');
+        }
+    }
+
+    let mut output = String::new();
+    append_text(value, &mut output);
+    output.trim().to_string()
 }
 
 fn status_emoji(status: &Option<Named>) -> &'static str {
@@ -325,14 +495,23 @@ async fn main() {
         let email = required_env("JIRA_USER_EMAIL")?;
         let token = required_env("JIRA_API_TOKEN")?;
         if let Some(key) = &config.key {
-            let issue = get_issue(&Client::new(), &base_url, &email, &token, key).await?;
+            let client = Client::new();
+            if let Some(comment) = &config.comment {
+                add_comment(&client, &base_url, &email, &token, key, comment).await?;
+            }
+            let issue = get_issue(&client, &base_url, &email, &token, key).await?;
+            let comments = get_comments(&client, &base_url, &email, &token, key).await?;
             if config.json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&issue).map_err(|e| e.to_string())?
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "issue": issue,
+                        "comments": comments,
+                    }))
+                    .map_err(|e| e.to_string())?
                 );
             } else {
-                print_issue_details(&issue, &base_url);
+                print_issue_details(&issue, &comments, &base_url);
             }
             return Ok(());
         }
@@ -383,6 +562,7 @@ mod tests {
                 json: true,
                 jql: None,
                 key: None,
+                comment: None,
                 max: 12,
                 help: false
             }
@@ -393,6 +573,31 @@ mod tests {
     fn parses_issue_key() {
         let config = parse_args(&["--key".into(), "PROJ-123".into()]).unwrap();
         assert_eq!(config.key.as_deref(), Some("PROJ-123"));
+    }
+
+    #[test]
+    fn parses_comment_for_an_issue() {
+        let config = parse_args(&[
+            "--key".into(),
+            "PROJ-123".into(),
+            "--comment".into(),
+            "Looks good".into(),
+        ])
+        .unwrap();
+        assert_eq!(config.comment.as_deref(), Some("Looks good"));
+        assert!(parse_args(&["--comment".into(), "Looks good".into()]).is_err());
+    }
+
+    #[test]
+    fn renders_adf_comment_text() {
+        let comment = serde_json::json!({
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "First line"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "Second line"}]}
+            ]
+        });
+        assert_eq!(adf_text(&comment), "First line\nSecond line");
     }
 
     #[test]
