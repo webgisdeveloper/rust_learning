@@ -4,6 +4,9 @@
 //! Usage: myjira [me|ACCOUNT_ID] [--json] [--max N] [--jql JQL] [--key ISSUE_KEY] [--comment TEXT]
 
 use reqwest::Client;
+use rmcp::{
+    ServiceExt, handler::server::wrapper::Parameters, schemars, tool, tool_router, transport::stdio,
+};
 use serde::{Deserialize, Serialize};
 use std::env;
 
@@ -70,6 +73,164 @@ struct SearchRequest<'a> {
     next_page_token: Option<&'a str>,
 }
 
+/// Parameters accepted by the `list_jira_issues` MCP tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ListIssuesParams {
+    /// Account ID to query. Omit it to use the authenticated Jira user.
+    assignee: Option<String>,
+    /// A complete JQL expression. Takes precedence over `assignee` when supplied.
+    jql: Option<String>,
+    /// Maximum number of results, from 1 through 100. Defaults to 100.
+    max: Option<usize>,
+}
+
+/// Parameters accepted by the `get_jira_issue` MCP tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct IssueParams {
+    /// Jira issue key, for example `PROJ-123`.
+    key: String,
+}
+
+/// Parameters accepted by the `add_jira_comment` MCP tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct AddCommentParams {
+    /// Jira issue key, for example `PROJ-123`.
+    key: String,
+    /// Plain-text comment to add to the issue.
+    comment: String,
+}
+
+#[derive(Clone)]
+struct JiraMcpServer {
+    client: Client,
+    base_url: String,
+    email: String,
+    token: String,
+}
+
+impl JiraMcpServer {
+    fn new() -> Result<Self, String> {
+        Ok(Self {
+            client: Client::new(),
+            base_url: required_env("JIRA_BASE_URL")?,
+            email: required_env("JIRA_USER_EMAIL")?,
+            token: required_env("JIRA_API_TOKEN")?,
+        })
+    }
+
+    fn valid_key(key: &str) -> bool {
+        !key.is_empty()
+            && key.chars().all(|character| {
+                character.is_ascii_alphanumeric() || character == '-' || character == '_'
+            })
+    }
+}
+
+#[tool_router(server_handler)]
+impl JiraMcpServer {
+    #[tool(
+        description = "List Jira issues assigned to a user or matching a JQL query. Results include issue key, summary, status, and priority."
+    )]
+    async fn list_jira_issues(&self, Parameters(params): Parameters<ListIssuesParams>) -> String {
+        let max = params.max.unwrap_or(100);
+        if !(1..=100).contains(&max) {
+            return "Error: max must be between 1 and 100.".into();
+        }
+        let config = Config {
+            assignee: params.assignee.unwrap_or_else(|| "me".into()),
+            json: true,
+            jql: params.jql,
+            key: None,
+            comment: None,
+            max,
+            help: false,
+        };
+        let jql = match jql_for(&config) {
+            Ok(jql) => jql,
+            Err(error) => return format!("Error: {error}"),
+        };
+        match search(
+            &self.client,
+            &self.base_url,
+            &self.email,
+            &self.token,
+            &jql,
+            max,
+        )
+        .await
+        {
+            Ok(mut issues) => {
+                issues.sort_by_key(|issue| status_rank(&issue.fields.status));
+                serde_json::to_string_pretty(&issues)
+                    .unwrap_or_else(|error| format!("Error serializing Jira results: {error}"))
+            }
+            Err(error) => format!("Error: {error}"),
+        }
+    }
+
+    #[tool(description = "Get a Jira issue and all of its comments.")]
+    async fn get_jira_issue(&self, Parameters(params): Parameters<IssueParams>) -> String {
+        if !Self::valid_key(&params.key) {
+            return "Error: key must contain only letters, numbers, hyphens, or underscores."
+                .into();
+        }
+        let result = async {
+            let issue = get_issue(
+                &self.client,
+                &self.base_url,
+                &self.email,
+                &self.token,
+                &params.key,
+            )
+            .await?;
+            let comments = get_comments(
+                &self.client,
+                &self.base_url,
+                &self.email,
+                &self.token,
+                &params.key,
+            )
+            .await?;
+            serde_json::to_string_pretty(&serde_json::json!({
+                "issue": issue,
+                "comments": comments,
+            }))
+            .map_err(|error| error.to_string())
+        }
+        .await;
+        result.unwrap_or_else(|error: String| format!("Error: {error}"))
+    }
+
+    #[tool(
+        description = "Add a plain-text comment to a Jira issue, then return the updated issue and its comments."
+    )]
+    async fn add_jira_comment(&self, Parameters(params): Parameters<AddCommentParams>) -> String {
+        if !Self::valid_key(&params.key) {
+            return "Error: key must contain only letters, numbers, hyphens, or underscores."
+                .into();
+        }
+        if params.comment.trim().is_empty() {
+            return "Error: comment must be non-empty.".into();
+        }
+        match add_comment(
+            &self.client,
+            &self.base_url,
+            &self.email,
+            &self.token,
+            &params.key,
+            &params.comment,
+        )
+        .await
+        {
+            Ok(()) => {
+                self.get_jira_issue(Parameters(IssueParams { key: params.key }))
+                    .await
+            }
+            Err(error) => format!("Error: {error}"),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Config {
     assignee: String,
@@ -85,6 +246,7 @@ fn usage() {
     eprintln!(
         "Usage: myjira [me|ACCOUNT_ID] [--json] [--max N] [--jql JQL] [--key ISSUE_KEY] [--comment TEXT]"
     );
+    eprintln!("       myjira --mcp");
     eprintln!("  Defaults to me. Jira Cloud requires an account ID for another user.");
 }
 
@@ -485,6 +647,26 @@ fn field_name(field: &Option<Named>) -> &str {
 async fn main() {
     let _ = dotenvy::dotenv();
     let args: Vec<String> = env::args().skip(1).collect();
+    if args.as_slice() == ["--mcp"] {
+        let result: Result<(), String> = async {
+            let server = JiraMcpServer::new()?;
+            let running = server
+                .serve(stdio())
+                .await
+                .map_err(|error| format!("Could not start MCP server: {error}"))?;
+            running
+                .waiting()
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("MCP server stopped unexpectedly: {error}"))
+        }
+        .await;
+        if let Err(error) = result {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let result: Result<(), String> = async {
         let config = parse_args(&args)?;
         if config.help {
