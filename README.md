@@ -31,7 +31,7 @@ This repository features several standalone command-line tools demonstrating var
 | **`checkIP_cli`** | [`checkIP_cli/`](checkIP_cli/) | [README](checkIP_cli/README.md) | Network diagnostic utility printing hostname, LAN IP, and public IP address |
 | **`cloudflare_r2`** | [`cloudflare_r2/`](cloudflare_r2/) | [README](cloudflare_r2/README.md) | S3-compatible CLI client for Cloudflare R2 object storage (upload, download, list, stat, presign, delete) |
 | **`mastodon_cli`** | [`mastodon_cli/`](mastodon_cli/) | [README](mastodon_cli/README.md) | Mastodon CLI for posting statuses with attachments, browsing timelines, emoji shortcodes, and spell checks |
-| **`myjira`** | [`myjira/`](myjira/) | Source | Jira Cloud CLI and Model Context Protocol (MCP) server for querying issues and managing comments |
+| **`myjira`** | [`myjira/`](myjira/) | [README](myjira/README.md) | Jira Cloud CLI and Model Context Protocol (MCP) server for querying issues and managing comments |
 | **`weather_cli`** | [`weather_cli/`](weather_cli/) | [README](weather_cli/README.md) | Real-time weather reporting with geocoding, multi-city matching, and ASCII world maps |
 | **`triple_dragon`** | [`triple_dragon/`](triple_dragon/) | [README](triple_dragon/README.md) | High-performance multi-threaded fractal generator rendering high-resolution PNGs of the Triple Dragon dynamical system |
 | **`rust_julia_3d`** | [`rust_julia_3d/`](rust_julia_3d/) | [README](rust_julia_3d/README.md) | Scientific 3D surface visualizer embedding the Julia runtime via `jlrs` with `GLMakie` |
