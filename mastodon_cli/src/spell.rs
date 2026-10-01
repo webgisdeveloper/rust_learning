@@ -430,6 +430,18 @@ pub(crate) fn check_and_correct_interactively(
     message: &str,
     custom_dict: Option<&Path>,
 ) -> io::Result<String> {
+    let stdin = io::stdin();
+    let stderr = io::stderr();
+    check_and_correct_with_io(message, custom_dict, stdin.lock(), stderr)
+}
+
+/// Core interactive spell check logic parameterized by input reader and output writer for testability.
+pub(crate) fn check_and_correct_with_io<R: io::BufRead, W: io::Write>(
+    message: &str,
+    custom_dict: Option<&Path>,
+    mut reader: R,
+    mut writer: W,
+) -> io::Result<String> {
     let warnings = check_message(message, custom_dict);
     if warnings.is_empty() {
         return Ok(message.to_string());
@@ -438,31 +450,34 @@ pub(crate) fn check_and_correct_interactively(
     let mut corrected = message.to_string();
 
     for warning in &warnings {
-        eprintln!(
+        writeln!(
+            writer,
             "\nwarning: misspelled word \"{}\" detected",
             warning.word
-        );
-        eprintln!("Suggestions for \"{}\":", warning.word);
-        eprintln!("  0) Keep as-is \"{}\"", warning.word);
+        )?;
+        writeln!(writer, "Suggestions for \"{}\":", warning.word)?;
+        writeln!(writer, "  0) Keep as-is \"{}\"", warning.word)?;
 
         for (i, sug) in warning.suggestions.iter().enumerate() {
-            eprintln!("  {}) Replace with \"{}\"", i + 1, sug);
+            writeln!(writer, "  {}) Replace with \"{}\"", i + 1, sug)?;
         }
-        eprintln!("  i) Ignore & Add \"{}\" to personal dictionary", warning.word);
-        eprintln!("  a) Abort - exit without posting");
+        writeln!(writer, "  r) Enter replacement word")?;
+        writeln!(writer, "  i) Ignore & Add \"{}\" to personal dictionary", warning.word)?;
+        writeln!(writer, "  a) Abort - exit without posting")?;
 
         let choice = loop {
-            eprint!(
-                "Enter choice [0-{}, i, a]: ",
+            write!(
+                writer,
+                "Enter choice [0-{}, r, i, a]: ",
                 warning.suggestions.len()
-            );
-            io::stderr().flush()?;
+            )?;
+            writer.flush()?;
 
             let mut input = String::new();
-            let n = io::stdin().read_line(&mut input)?;
+            let n = reader.read_line(&mut input)?;
             if n == 0 {
                 // EOF / Ctrl-D
-                eprintln!("\nAborted. Message not posted.");
+                writeln!(writer, "\nAborted. Message not posted.")?;
                 std::process::exit(0);
             }
 
@@ -472,17 +487,45 @@ pub(crate) fn check_and_correct_interactively(
                 || trimmed.eq_ignore_ascii_case("q")
                 || trimmed.eq_ignore_ascii_case("quit")
             {
-                eprintln!("Aborted. Message not posted.");
+                writeln!(writer, "Aborted. Message not posted.")?;
                 std::process::exit(0);
             }
 
             if trimmed.eq_ignore_ascii_case("i") || trimmed.eq_ignore_ascii_case("ignore") {
                 if let Err(e) = add_word_to_personal_dict(&warning.word, custom_dict) {
-                    eprintln!("Warning: failed to write to personal dictionary: {}", e);
+                    writeln!(writer, "Warning: failed to write to personal dictionary: {}", e)?;
                 } else {
-                    eprintln!(" -> Added \"{}\" to personal dictionary", warning.word);
+                    writeln!(writer, " -> Added \"{}\" to personal dictionary", warning.word)?;
                 }
                 break Choice::Ignore;
+            }
+
+            if trimmed.eq_ignore_ascii_case("r")
+                || trimmed.eq_ignore_ascii_case("replace")
+                || trimmed.eq_ignore_ascii_case("e")
+                || trimmed.eq_ignore_ascii_case("edit")
+                || trimmed.eq_ignore_ascii_case("c")
+                || trimmed.eq_ignore_ascii_case("custom")
+            {
+                let replacement = prompt_replacement_word(&mut reader, &mut writer)?;
+                break Choice::Replace(replacement);
+            }
+
+            if let Some(rest) = trimmed
+                .strip_prefix("r ")
+                .or_else(|| trimmed.strip_prefix("R "))
+                .or_else(|| trimmed.strip_prefix("replace "))
+                .or_else(|| trimmed.strip_prefix("Replace "))
+                .or_else(|| trimmed.strip_prefix("e "))
+                .or_else(|| trimmed.strip_prefix("E "))
+            {
+                let manual_word = rest.trim();
+                if !manual_word.is_empty() {
+                    break Choice::Replace(manual_word.to_string());
+                } else {
+                    let replacement = prompt_replacement_word(&mut reader, &mut writer)?;
+                    break Choice::Replace(replacement);
+                }
             }
 
             match trimmed.parse::<usize>() {
@@ -493,11 +536,16 @@ pub(crate) fn check_and_correct_interactively(
                         break Choice::Replace(warning.suggestions[num - 1].clone());
                     }
                 }
+                Ok(num) if num == warning.suggestions.len() + 1 => {
+                    let replacement = prompt_replacement_word(&mut reader, &mut writer)?;
+                    break Choice::Replace(replacement);
+                }
                 _ => {
-                    eprintln!(
-                        "Invalid choice. Please enter 0..{}, 'i' to ignore/add, or 'a' to abort.",
+                    writeln!(
+                        writer,
+                        "Invalid choice. Please enter 0..{}, 'r' to enter replacement, 'i' to ignore/add, or 'a' to abort.",
                         warning.suggestions.len()
-                    );
+                    )?;
                     continue;
                 }
             }
@@ -505,21 +553,49 @@ pub(crate) fn check_and_correct_interactively(
 
         match choice {
             Choice::Keep | Choice::Ignore => {
-                eprintln!(" -> keeping \"{}\" as-is", warning.word);
+                writeln!(writer, " -> keeping \"{}\" as-is", warning.word)?;
             }
             Choice::Replace(replacement) => {
                 // Replace instances of misspelled word matching word boundary
                 corrected = replace_word(&corrected, &warning.word, &replacement);
-                eprintln!(
+                writeln!(
+                    writer,
                     " -> replaced \"{}\" with \"{}\"",
                     warning.word, replacement
-                );
+                )?;
             }
         }
     }
 
-    eprintln!("\nFinal corrected message: {}", corrected);
+    writeln!(writer, "\nFinal corrected message: {}", corrected)?;
     Ok(corrected)
+}
+
+/// Prompts the user to enter a custom word to replace the misspelled word.
+fn prompt_replacement_word<R: io::BufRead, W: io::Write>(
+    reader: &mut R,
+    writer: &mut W,
+) -> io::Result<String> {
+    loop {
+        write!(writer, "Enter replacement word: ")?;
+        writer.flush()?;
+
+        let mut input = String::new();
+        let n = reader.read_line(&mut input)?;
+        if n == 0 {
+            // EOF / Ctrl-D
+            writeln!(writer, "\nAborted. Message not posted.")?;
+            std::process::exit(0);
+        }
+
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            writeln!(writer, "Replacement word cannot be empty. Please enter a valid word.")?;
+            continue;
+        }
+
+        return Ok(trimmed.to_string());
+    }
 }
 
 enum Choice {
@@ -629,6 +705,75 @@ mod tests {
         assert!(checker.is_valid("don't"));
         assert!(checker.is_valid("user's"));
         assert!(checker.is_valid("it's"));
+    }
+
+    #[test]
+    fn test_interactive_manual_word_replacement_choice_r() {
+        let input = "r\nBonjour\n";
+        let mut output = Vec::new();
+        let result = check_and_correct_with_io(
+            "Helo world!",
+            None,
+            input.as_bytes(),
+            &mut output,
+        )
+        .unwrap();
+
+        assert_eq!(result, "Bonjour world!");
+        let out_str = String::from_utf8(output).unwrap();
+        assert!(out_str.contains("r) Enter replacement word"));
+        assert!(out_str.contains("Enter replacement word: "));
+        assert!(out_str.contains("-> replaced \"Helo\" with \"Bonjour\""));
+    }
+
+    #[test]
+    fn test_interactive_manual_word_replacement_inline() {
+        let input = "r Hi\n";
+        let mut output = Vec::new();
+        let result = check_and_correct_with_io(
+            "Helo world!",
+            None,
+            input.as_bytes(),
+            &mut output,
+        )
+        .unwrap();
+
+        assert_eq!(result, "Hi world!");
+        let out_str = String::from_utf8(output).unwrap();
+        assert!(out_str.contains("-> replaced \"Helo\" with \"Hi\""));
+    }
+
+    #[test]
+    fn test_interactive_manual_word_replacement_empty_retry() {
+        let input = "r\n\nGreetings\n";
+        let mut output = Vec::new();
+        let result = check_and_correct_with_io(
+            "Helo world!",
+            None,
+            input.as_bytes(),
+            &mut output,
+        )
+        .unwrap();
+
+        assert_eq!(result, "Greetings world!");
+        let out_str = String::from_utf8(output).unwrap();
+        assert!(out_str.contains("Replacement word cannot be empty. Please enter a valid word."));
+    }
+
+    #[test]
+    fn test_interactive_manual_word_replacement_numbered_choice() {
+        // Option 4 when there are 3 suggestions
+        let input = "4\nHello\n";
+        let mut output = Vec::new();
+        let result = check_and_correct_with_io(
+            "Helo world!",
+            None,
+            input.as_bytes(),
+            &mut output,
+        )
+        .unwrap();
+
+        assert_eq!(result, "Hello world!");
     }
 }
 
