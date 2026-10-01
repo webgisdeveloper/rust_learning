@@ -35,7 +35,6 @@ This repository features several standalone command-line tools demonstrating var
 | **`weather_cli`** | [`weather_cli/`](weather_cli/) | [README](weather_cli/README.md) | Real-time weather reporting with geocoding, multi-city matching, and ASCII world maps |
 | **`triple_dragon`** | [`triple_dragon/`](triple_dragon/) | [README](triple_dragon/README.md) | High-performance multi-threaded fractal generator rendering high-resolution PNGs of the Triple Dragon dynamical system |
 | **`rust_julia_3d`** | [`rust_julia_3d/`](rust_julia_3d/) | [README](rust_julia_3d/README.md) | Scientific 3D surface visualizer embedding the Julia runtime via `jlrs` with `GLMakie` |
-| **`day1_cli`** | [`day1_cli/`](day1_cli/) | Source | Interactive preparatory REPL admin console built in Day 1 of the tutorial |
 
 ---
 
@@ -126,11 +125,4 @@ Interoperability demonstration embedding the Julia runtime inside Rust via `jlrs
 - Generates 3D surface plot data ($f(x, y) = \sin(\sqrt{x^2 + y^2})$) and displays an interactive 3D window.
 ```bash
 cargo run -p rust_julia_3d
-```
-
-#### 9. [day1_cli](day1_cli/)
-The foundational command-line interface created during Day 1 of the tutorial.
-- Demonstrates basic terminal I/O, prompt looping (`std::io::stdin`, `stdout::flush`), and pattern matching on input commands.
-```bash
-cargo run -p day1_cli
 ```
