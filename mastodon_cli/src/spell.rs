@@ -3,11 +3,12 @@
 //! This module handles pre-post spell checking for Mastodon messages.
 //! It includes:
 //! - Smart tokenization (ignoring URLs, handles, hashtags, emojis, code/numbers, acronyms)
-//! - US English (`en_US`) dictionary lookups (built-in wordlist + system dict + custom user dict)
-//! - Edit-distance suggestion generation (Levenshtein distance)
+//! - US English (`en_US`) dictionary lookups (built-in wordlist + aspell + custom user dict)
+//! - Aspell-backed validation/suggestions (handles affix expansion like `re- + mind = remind`)
+//! - Edit-distance fallback suggestions (Levenshtein distance) when aspell is unavailable
 //! - Personal dictionary persistence (`~/.config/mastodon_cli/dict.txt`)
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -95,6 +96,80 @@ static BUILTIN_WORDS: &[&str] = &[
 
 /// Lazy static initialized default spell checker.
 static DEFAULT_CHECKER: OnceLock<SpellChecker> = OnceLock::new();
+
+/// Cached aspell availability probe (`aspell dicts` succeeds).
+static ASPELL_AVAILABLE: OnceLock<bool> = OnceLock::new();
+
+/// Returns true if the `aspell` binary with an English dictionary is usable.
+fn aspell_available() -> bool {
+    *ASPELL_AVAILABLE.get_or_init(|| {
+        std::process::Command::new("aspell")
+            .arg("dicts")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Batch-query aspell (`aspell -a --lang=en_US`) for multiple words in one process.
+///
+/// Returns a map of lowercased word -> `None` (aspell says correct, `*`)
+/// or `Some(suggestions)` (misspelled; possibly empty when aspell has no ideas, `#`).
+/// Returns an empty map when aspell is unavailable or the query fails (caller falls back).
+fn aspell_batch(words: &[String]) -> HashMap<String, Option<Vec<String>>> {
+    let mut out = HashMap::new();
+    if words.is_empty() || !aspell_available() {
+        return out;
+    }
+    let input = words.join("\n");
+    let output = std::process::Command::new("aspell")
+        .args(["-a", "--lang=en_US"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write as _;
+            if let Some(stdin) = child.stdin.as_mut() {
+                let _ = stdin.write_all(input.as_bytes());
+            }
+            child.wait_with_output()
+        });
+    let output = match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        _ => return out,
+    };
+    // `aspell -a` emits one result line per input word (plus blank lines),
+    // in order. Skip the `@(#) ...` header and blank lines, then zip back.
+    let result_lines: Vec<&str> = output
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.is_empty() && !t.starts_with("@(#)")
+        })
+        .collect();
+    for (word, line) in words.iter().zip(result_lines) {
+        let t = line.trim();
+        if t.starts_with('*') || t.starts_with('+') {
+            out.insert(word.to_lowercase(), None);
+        } else if t.starts_with('&') {
+            let sugs = t
+                .split_once(':')
+                .map(|(_, rest)| {
+                    rest.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            out.insert(word.to_lowercase(), Some(sugs));
+        } else if t.starts_with('#') {
+            out.insert(word.to_lowercase(), Some(Vec::new()));
+        }
+        // Unrecognized lines are omitted -> caller treats as fallback.
+    }
+    out
+}
 
 /// Spell checker holding valid dictionary words and custom user additions.
 #[derive(Debug, Clone)]
@@ -188,7 +263,27 @@ impl SpellChecker {
     }
 
     /// Generate replacement suggestions for a misspelled word sorted by edit distance and similarity.
+    ///
+    /// Tries `aspell` first (affix-aware, e.g. knows `remind`); falls back to
+    /// local Levenshtein search over the built-in + user wordlists.
     pub(crate) fn suggest(&self, query: &str, limit: usize) -> Vec<String> {
+        if aspell_available() {
+            let owned = vec![query.to_string()];
+            let res = aspell_batch(&owned);
+            if let Some(Some(sugs)) = res.get(&query.to_lowercase()) {
+                if !sugs.is_empty() {
+                    return sugs.iter().take(limit).cloned().collect();
+                }
+                // Empty aspell list -> fall through to Levenshtein fallback.
+            } else if res.contains_key(&query.to_lowercase()) {
+                return Vec::new(); // aspell says correct
+            }
+        }
+        self.suggest_local(query, limit)
+    }
+
+    /// Local Levenshtein fallback over the in-memory wordlist (no subprocess).
+    fn suggest_local(&self, query: &str, limit: usize) -> Vec<String> {
         let query_lc = query.to_lowercase();
         let is_title_case = query
             .chars()
@@ -396,6 +491,11 @@ pub(crate) fn tokenize(text: &str) -> Vec<Token> {
 
 /// Evaluates a message string for US English misspellings.
 ///
+/// Two-stage: fast local allowlist (`BUILTIN_WORDS` + personal/custom dicts,
+/// covering tech terms like `tokio` that aspell lacks) then a single batched
+/// `aspell -a` call for the remainder so affix-derived words like `remind`
+/// (`re- + mind`) are accepted. Falls back to local-only when aspell is missing.
+///
 /// Returns a list of `SpellWarning`s for any unrecognised words.
 pub(crate) fn check_message(text: &str, custom_dict: Option<&Path>) -> Vec<SpellWarning> {
     let checker = match custom_dict {
@@ -405,19 +505,52 @@ pub(crate) fn check_message(text: &str, custom_dict: Option<&Path>) -> Vec<Spell
             .clone(),
     };
 
-    let mut warnings = Vec::new();
     let tokens = tokenize(text);
 
-    for token in tokens {
-        if !checker.is_valid(&token.word) {
-            // Avoid duplicate warnings for the same misspelled word repeated
-            if !warnings.iter().any(|w: &SpellWarning| w.word.eq_ignore_ascii_case(&token.word)) {
-                let suggestions = checker.suggest(&token.word, 3);
-                warnings.push(SpellWarning {
-                    word: token.word.clone(),
-                    suggestions,
-                });
+    // Stage 1: local allowlist miss (deduped, case-insensitive).
+    let mut candidates: Vec<String> = Vec::new();
+    for token in &tokens {
+        if !checker.is_valid(&token.word)
+            && !candidates.iter().any(|w: &String| w.eq_ignore_ascii_case(&token.word))
+        {
+            candidates.push(token.word.clone());
+        }
+    }
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    // Stage 2: one batched aspell query for all candidates.
+    let aspell_results = aspell_batch(&candidates);
+    let use_aspell = aspell_available() && !aspell_results.is_empty();
+
+    let mut warnings = Vec::new();
+    for word in candidates {
+        let key = word.to_lowercase();
+        if use_aspell {
+            match aspell_results.get(&key) {
+                Some(None) => continue, // aspell says correct (e.g. "remind")
+                Some(Some(sugs)) if !sugs.is_empty() => {
+                    warnings.push(SpellWarning {
+                        word,
+                        suggestions: sugs.iter().take(3).cloned().collect(),
+                    });
+                    continue;
+                }
+                // `Some(empty)` (no aspell ideas) or missing entry ->
+                // keep warning with local Levenshtein suggestions.
+                _ => {}
             }
+            warnings.push(SpellWarning {
+                suggestions: checker.suggest_local(&word, 3),
+                word,
+            });
+        } else {
+            // No aspell: single entry point (tries aspell, falls back locally).
+            warnings.push(SpellWarning {
+                suggestions: checker.suggest(&word, 3),
+                word,
+            });
         }
     }
 
