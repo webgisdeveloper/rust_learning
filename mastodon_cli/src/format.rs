@@ -65,7 +65,9 @@ pub(crate) struct EmojiWarning {
 }
 
 /// Compute Levenshtein edit distance (pure, no alloc beyond two rows).
-fn levenshtein(a: &str, b: &str) -> usize {
+///
+/// Single shared implementation — also used by `spell::suggest_local`.
+pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
     let a = a.as_bytes();
     let b = b.as_bytes();
     if a.is_empty() {

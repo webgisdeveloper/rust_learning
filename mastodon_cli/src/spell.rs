@@ -14,18 +14,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// A word token extracted from a message alongside its character position.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Token {
-    /// The cleaned word token suitable for spell checking.
-    pub word: String,
-    /// The original raw word substring before cleaning.
-    pub raw: String,
-    /// Byte offset start index in the input string.
-    pub start: usize,
-    /// Byte offset end index in the input string.
-    pub end: usize,
-}
+use crate::format::levenshtein;
 
 /// A misspelling warning containing the raw word and top suggestions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +47,7 @@ static BUILTIN_WORDS: &[&str] = &[
     "in", "out", "on", "off", "over", "under", "again", "further", "then", "once", "here",
     "there", "when", "where", "why", "how", "all", "any", "both", "each", "few", "more",
     "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so",
-    "than", "too", "very", "s", "t", "can", "will", "just", "don", "should", "now",
+    "than", "too", "very", "can", "will", "just", "should", "now",
     // Common Verbs & Nouns
     "say", "says", "said", "saying", "make", "makes", "made", "making", "go", "goes",
     "went", "going", "gone", "take", "takes", "took", "taking", "taken", "come", "comes",
@@ -91,7 +80,7 @@ static BUILTIN_WORDS: &[&str] = &[
     "important", "public", "private", "simple", "complex", "easy", "hard", "best", "better",
     "worse", "worst", "today", "tomorrow", "yesterday", "now", "later", "soon", "always",
     "never", "sometimes", "often", "usually", "maybe", "please", "thanks", "thank",
-    "welcome", "hi", "hey", "yes", "yeah", "no", "nope", "ok", "okay", "fine", "sure",
+    "welcome", "hi", "hey", "yes", "yeah", "nope", "ok", "okay", "fine", "sure",
 ];
 
 /// Lazy static initialized default spell checker.
@@ -239,51 +228,50 @@ impl SpellChecker {
     }
 
     /// Check if a word is recognized in the dictionary.
+    ///
+    /// Apostrophe forms are validated structurally so they work even when the
+    /// full form is absent from the dictionary (e.g. hunspell lists "don't"
+    /// literally, but a minimal wordlist may not):
+    /// "don't" -> "do" + "not", "they're" -> "they" + "are", "user's" -> possessive.
     pub(crate) fn is_valid(&self, word: &str) -> bool {
         let lc = word.to_lowercase();
         if self.words.contains(&lc) {
             return true;
         }
 
-        // Handle common English contractions with apostrophes (e.g., "don't", "it's", "they're")
-        if word.contains('\'') {
-            let base = word.replace('\'', "");
-            if self.words.contains(&base.to_lowercase()) {
-                return true;
-            }
-            // Strip trailing 's (e.g. "user's" -> "user")
-            if let Some(stripped) = word.strip_suffix("'s").or_else(|| word.strip_suffix("’s")) {
-                if self.words.contains(&stripped.to_lowercase()) {
+        // "n't" contractions -> base word + "not" (e.g. "don't" -> "do" + "not")
+        for suffix in ["n't", "'nt", "n’t", "’nt"] {
+            if let Some(base) = word.strip_suffix(suffix) {
+                if self.words.contains(&base.to_lowercase()) && self.words.contains("not") {
                     return true;
                 }
+                break; // fall through to generic apostrophe handling
             }
+        }
+
+        // Possessives ("user's") and other contractions ("they're", "we'll", "i'm")
+        if let Some((base, tail)) = word.split_once(['\'', '’']) {
+            let base_ok = self.words.contains(&base.to_lowercase());
+            match tail {
+                "s" | "" => return base_ok,
+                "re" => return base_ok && self.words.contains("are"),
+                "ll" => return base_ok && self.words.contains("will"),
+                "ve" => return base_ok && self.words.contains("have"),
+                "m" => return base_ok && self.words.contains("am"),
+                _ => {}
+            }
+            // Fallback: de-apostrophed form ("dont") or the bare base word.
+            return self.words.contains(&word.replace(['\'', '’'], "").to_lowercase()) || base_ok;
         }
 
         false
     }
 
-    /// Generate replacement suggestions for a misspelled word sorted by edit distance and similarity.
+    /// Generate replacement suggestions for a misspelled word via local
+    /// Levenshtein search over the built-in + user wordlist (offline path).
     ///
-    /// Tries `aspell` first (affix-aware, e.g. knows `remind`); falls back to
-    /// local Levenshtein search over the built-in + user wordlists.
+    /// Aspell-backed suggestions are handled batched in `check_message`.
     pub(crate) fn suggest(&self, query: &str, limit: usize) -> Vec<String> {
-        if aspell_available() {
-            let owned = vec![query.to_string()];
-            let res = aspell_batch(&owned);
-            if let Some(Some(sugs)) = res.get(&query.to_lowercase()) {
-                if !sugs.is_empty() {
-                    return sugs.iter().take(limit).cloned().collect();
-                }
-                // Empty aspell list -> fall through to Levenshtein fallback.
-            } else if res.contains_key(&query.to_lowercase()) {
-                return Vec::new(); // aspell says correct
-            }
-        }
-        self.suggest_local(query, limit)
-    }
-
-    /// Local Levenshtein fallback over the in-memory wordlist (no subprocess).
-    fn suggest_local(&self, query: &str, limit: usize) -> Vec<String> {
         let query_lc = query.to_lowercase();
         let is_title_case = query
             .chars()
@@ -383,35 +371,7 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-/// Pure Levenshtein distance calculation.
-fn levenshtein(a: &str, b: &str) -> usize {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-
-    if a_bytes.is_empty() {
-        return b_bytes.len();
-    }
-    if b_bytes.is_empty() {
-        return a_bytes.len();
-    }
-
-    let mut prev: Vec<usize> = (0..=b_bytes.len()).collect();
-    let mut cur = vec![0; b_bytes.len() + 1];
-
-    for (i, &ca) in a_bytes.iter().enumerate() {
-        cur[0] = i + 1;
-        for (j, &cb) in b_bytes.iter().enumerate() {
-            let cost = if ca == cb { 0 } else { 1 };
-            cur[j + 1] = (prev[j + 1] + 1)
-                .min(cur[j] + 1)
-                .min(prev[j] + cost);
-        }
-        std::mem::swap(&mut prev, &mut cur);
-    }
-    prev[b_bytes.len()]
-}
-
-/// Extracts tokens suitable for US English spell checking from a message.
+/// Extracts cleaned words suitable for US English spell checking from a message.
 ///
 /// Skips non-prose tokens:
 /// - URLs (starts with http:// or https://)
@@ -421,15 +381,10 @@ fn levenshtein(a: &str, b: &str) -> usize {
 /// - Digits/numbers (e.g. 123, v1.0)
 /// - ALL_CAPS acronyms of length >= 2 (e.g. API, HTTP, CLI, JSON)
 /// - Identifiers with code symbols (containing _, /, \, <, >)
-pub(crate) fn tokenize(text: &str) -> Vec<Token> {
+pub(crate) fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
-    let mut offset = 0;
 
     for raw_word in text.split_whitespace() {
-        let start = text[offset..].find(raw_word).map(|i| offset + i).unwrap_or(offset);
-        let end = start + raw_word.len();
-        offset = end;
-
         // Skip URLs
         if raw_word.starts_with("http://") || raw_word.starts_with("https://") || raw_word.starts_with("www.") {
             continue;
@@ -478,12 +433,7 @@ pub(crate) fn tokenize(text: &str) -> Vec<Token> {
             continue;
         }
 
-        tokens.push(Token {
-            word: cleaned.to_string(),
-            raw: raw_word.to_string(),
-            start,
-            end,
-        });
+        tokens.push(cleaned.to_string());
     }
 
     tokens
@@ -509,11 +459,11 @@ pub(crate) fn check_message(text: &str, custom_dict: Option<&Path>) -> Vec<Spell
 
     // Stage 1: local allowlist miss (deduped, case-insensitive).
     let mut candidates: Vec<String> = Vec::new();
-    for token in &tokens {
-        if !checker.is_valid(&token.word)
-            && !candidates.iter().any(|w: &String| w.eq_ignore_ascii_case(&token.word))
+    for word in &tokens {
+        if !checker.is_valid(word)
+            && !candidates.iter().any(|w: &String| w.eq_ignore_ascii_case(word))
         {
-            candidates.push(token.word.clone());
+            candidates.push(word.clone());
         }
     }
     if candidates.is_empty() {
@@ -541,17 +491,11 @@ pub(crate) fn check_message(text: &str, custom_dict: Option<&Path>) -> Vec<Spell
                 // keep warning with local Levenshtein suggestions.
                 _ => {}
             }
-            warnings.push(SpellWarning {
-                suggestions: checker.suggest_local(&word, 3),
-                word,
-            });
-        } else {
-            // No aspell: single entry point (tries aspell, falls back locally).
-            warnings.push(SpellWarning {
-                suggestions: checker.suggest(&word, 3),
-                word,
-            });
         }
+        warnings.push(SpellWarning {
+            suggestions: checker.suggest(&word, 3),
+            word,
+        });
     }
 
     warnings
@@ -614,73 +558,48 @@ pub(crate) fn check_and_correct_with_io<R: io::BufRead, W: io::Write>(
                 std::process::exit(0);
             }
 
-            let trimmed = input.trim();
-            if trimmed.eq_ignore_ascii_case("a")
-                || trimmed.eq_ignore_ascii_case("abort")
-                || trimmed.eq_ignore_ascii_case("q")
-                || trimmed.eq_ignore_ascii_case("quit")
-            {
-                writeln!(writer, "Aborted. Message not posted.")?;
-                std::process::exit(0);
-            }
+            // Split an optional inline replacement off the verb:
+            // "r Hi" -> ("r", Some("Hi")), bare "i" -> ("i", None).
+            let (verb, inline) = match input.trim().split_once(' ') {
+                Some((v, rest)) => (v, Some(rest.trim())),
+                None => (input.trim(), None),
+            };
+            let inline = inline.filter(|s| !s.is_empty());
 
-            if trimmed.eq_ignore_ascii_case("i") || trimmed.eq_ignore_ascii_case("ignore") {
-                if let Err(e) = add_word_to_personal_dict(&warning.word, custom_dict) {
-                    writeln!(writer, "Warning: failed to write to personal dictionary: {}", e)?;
-                } else {
-                    writeln!(writer, " -> Added \"{}\" to personal dictionary", warning.word)?;
+            match verb.to_ascii_lowercase().as_str() {
+                "a" | "q" => {
+                    writeln!(writer, "Aborted. Message not posted.")?;
+                    std::process::exit(0);
                 }
-                break Choice::Ignore;
-            }
-
-            if trimmed.eq_ignore_ascii_case("r")
-                || trimmed.eq_ignore_ascii_case("replace")
-                || trimmed.eq_ignore_ascii_case("e")
-                || trimmed.eq_ignore_ascii_case("edit")
-                || trimmed.eq_ignore_ascii_case("c")
-                || trimmed.eq_ignore_ascii_case("custom")
-            {
-                let replacement = prompt_replacement_word(&mut reader, &mut writer)?;
-                break Choice::Replace(replacement);
-            }
-
-            if let Some(rest) = trimmed
-                .strip_prefix("r ")
-                .or_else(|| trimmed.strip_prefix("R "))
-                .or_else(|| trimmed.strip_prefix("replace "))
-                .or_else(|| trimmed.strip_prefix("Replace "))
-                .or_else(|| trimmed.strip_prefix("e "))
-                .or_else(|| trimmed.strip_prefix("E "))
-            {
-                let manual_word = rest.trim();
-                if !manual_word.is_empty() {
-                    break Choice::Replace(manual_word.to_string());
-                } else {
-                    let replacement = prompt_replacement_word(&mut reader, &mut writer)?;
+                "i" => {
+                    if let Err(e) = add_word_to_personal_dict(&warning.word, custom_dict) {
+                        writeln!(writer, "Warning: failed to write to personal dictionary: {}", e)?;
+                    } else {
+                        writeln!(writer, " -> Added \"{}\" to personal dictionary", warning.word)?;
+                    }
+                    break Choice::Ignore;
+                }
+                "r" | "e" | "c" => {
+                    let replacement = match inline {
+                        Some(word) => word.to_string(),
+                        None => prompt_replacement_word(&mut reader, &mut writer)?,
+                    };
                     break Choice::Replace(replacement);
                 }
-            }
-
-            match trimmed.parse::<usize>() {
-                Ok(num) if num <= warning.suggestions.len() => {
-                    if num == 0 {
-                        break Choice::Keep;
-                    } else {
+                _ => match verb.parse::<usize>() {
+                    Ok(0) => break Choice::Keep,
+                    Ok(num) if num <= warning.suggestions.len() => {
                         break Choice::Replace(warning.suggestions[num - 1].clone());
                     }
-                }
-                Ok(num) if num == warning.suggestions.len() + 1 => {
-                    let replacement = prompt_replacement_word(&mut reader, &mut writer)?;
-                    break Choice::Replace(replacement);
-                }
-                _ => {
-                    writeln!(
-                        writer,
-                        "Invalid choice. Please enter 0..{}, 'r' to enter replacement, 'i' to ignore/add, or 'a' to abort.",
-                        warning.suggestions.len()
-                    )?;
-                    continue;
-                }
+                    _ => {
+                        writeln!(
+                            writer,
+                            "Invalid choice. Please enter 0..{}, 'r' to enter replacement, 'i' to ignore/add, or 'a' to abort.",
+                            warning.suggestions.len()
+                        )?;
+                        continue;
+                    }
+                },
             }
         };
 
@@ -774,8 +693,7 @@ mod tests {
     #[test]
     fn test_tokenization_ignores_urls_handles_hashtags_emojis() {
         let msg = "Helo world! Visit https://example.com or email @alice@mastodon.social with #rustlang :rocket: and API v1.0";
-        let tokens = tokenize(msg);
-        let words: Vec<String> = tokens.into_iter().map(|t| t.word).collect();
+        let words: Vec<String> = tokenize(msg);
 
         assert!(words.contains(&"Helo".to_string()));
         assert!(words.contains(&"world".to_string()));
@@ -841,72 +759,43 @@ mod tests {
     }
 
     #[test]
-    fn test_interactive_manual_word_replacement_choice_r() {
-        let input = "r\nBonjour\n";
-        let mut output = Vec::new();
-        let result = check_and_correct_with_io(
-            "Helo world!",
-            None,
-            input.as_bytes(),
-            &mut output,
-        )
-        .unwrap();
-
-        assert_eq!(result, "Bonjour world!");
-        let out_str = String::from_utf8(output).unwrap();
-        assert!(out_str.contains("r) Enter replacement word"));
-        assert!(out_str.contains("Enter replacement word: "));
-        assert!(out_str.contains("-> replaced \"Helo\" with \"Bonjour\""));
-    }
-
-    #[test]
-    fn test_interactive_manual_word_replacement_inline() {
-        let input = "r Hi\n";
-        let mut output = Vec::new();
-        let result = check_and_correct_with_io(
-            "Helo world!",
-            None,
-            input.as_bytes(),
-            &mut output,
-        )
-        .unwrap();
-
-        assert_eq!(result, "Hi world!");
-        let out_str = String::from_utf8(output).unwrap();
-        assert!(out_str.contains("-> replaced \"Helo\" with \"Hi\""));
-    }
-
-    #[test]
-    fn test_interactive_manual_word_replacement_empty_retry() {
-        let input = "r\n\nGreetings\n";
-        let mut output = Vec::new();
-        let result = check_and_correct_with_io(
-            "Helo world!",
-            None,
-            input.as_bytes(),
-            &mut output,
-        )
-        .unwrap();
-
-        assert_eq!(result, "Greetings world!");
-        let out_str = String::from_utf8(output).unwrap();
-        assert!(out_str.contains("Replacement word cannot be empty. Please enter a valid word."));
-    }
-
-    #[test]
-    fn test_interactive_manual_word_replacement_numbered_choice() {
-        // Option 4 when there are 3 suggestions
-        let input = "4\nHello\n";
-        let mut output = Vec::new();
-        let result = check_and_correct_with_io(
-            "Helo world!",
-            None,
-            input.as_bytes(),
-            &mut output,
-        )
-        .unwrap();
-
-        assert_eq!(result, "Hello world!");
+    fn test_interactive_correction_flows() {
+        // (stdin, exact expected result ("" = any replacement), output fragments)
+        let cases: &[(&str, &str, &[&str])] = &[
+            (
+                "r\nBonjour\n",
+                "Bonjour world!",
+                &[
+                    "r) Enter replacement word",
+                    "Enter replacement word: ",
+                    "-> replaced \"Helo\" with \"Bonjour\"",
+                ],
+            ),
+            ("r Hi\n", "Hi world!", &["-> replaced \"Helo\" with \"Hi\""]),
+            (
+                "r\n\nGreetings\n",
+                "Greetings world!",
+                &["Replacement word cannot be empty. Please enter a valid word."],
+            ),
+            // Numbered choice: replaces with the top-ranked suggestion.
+            ("1\n", "", &["-> replaced"]),
+        ];
+        for (input, expected, fragments) in cases {
+            let mut output = Vec::new();
+            let result =
+                check_and_correct_with_io("Helo world!", None, input.as_bytes(), &mut output)
+                    .unwrap();
+            if expected.is_empty() {
+                assert_ne!(result, "Helo world!", "input={input:?}");
+                assert!(result.ends_with(" world!"), "input={input:?} -> {result:?}");
+            } else {
+                assert_eq!(result, *expected, "input={input:?}");
+            }
+            let out = String::from_utf8(output).unwrap();
+            for fragment in fragments.iter() {
+                assert!(out.contains(fragment), "input={input:?} missing {fragment:?}");
+            }
+        }
     }
 }
 

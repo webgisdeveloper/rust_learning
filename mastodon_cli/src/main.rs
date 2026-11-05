@@ -40,7 +40,7 @@ use api::{api_url, Account, Status, StatusRequest};
 use clap::Parser; // brings `Args::parse()` into scope — `Parser` is a trait
 use cli::Args;
 use format::{replace_emojis, replace_emojis_with_warnings, EmojiWarning};
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::AUTHORIZATION;
 use std::io::{self, IsTerminal, Write};
 
 /// Default Mastodon instance when the user provides no `--instance` and no
@@ -67,6 +67,28 @@ fn resolve_instance(arg: Option<String>) -> String {
         .or_else(|| std::env::var("MASTODON_INSTANCE").ok())
         .unwrap_or_else(|| DEFAULT_INSTANCE.to_string());
     api::normalize_instance(&configured)
+}
+
+/// Prints one `warning: unknown emoji shortcode` line per warning (shared by
+/// the non-interactive abort path and the interactive prompt path).
+fn print_emoji_warnings(warnings: &[EmojiWarning]) {
+    for warning in warnings {
+        let list: String = warning
+            .suggestions
+            .iter()
+            .map(|(sc, em)| format!(":{sc}: {em}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "warning: unknown emoji shortcode :{}: - did you mean {}? (kept as-is)",
+            warning.shortcode,
+            if list.is_empty() {
+                "no close matches".to_string()
+            } else {
+                list
+            }
+        );
+    }
 }
 
 /// Program entry point.
@@ -120,44 +142,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             expanded
         } else if !io::stdin().is_terminal() {
             // Non-interactive (pipe/CI) — cannot prompt, so abort without posting
-            for EmojiWarning {
-                shortcode,
-                suggestions,
-            } in &warnings
-            {
-                if suggestions.is_empty() {
-                    eprintln!("warning: unknown emoji shortcode :{shortcode}: - no close matches found (kept as-is)");
-                } else {
-                    let list: Vec<String> = suggestions
-                        .iter()
-                        .map(|(sc, em)| format!(":{sc}: {em}"))
-                        .collect();
-                    eprintln!(
-                        "warning: unknown emoji shortcode :{shortcode}: - did you mean {}? (kept as-is)",
-                        list.join(", ")
-                    );
-                }
-            }
+            print_emoji_warnings(&warnings);
             eprintln!("error: unknown emoji shortcode(s) found. Aborting without posting. Run interactively to choose a replacement or fix your message.");
             std::process::exit(1);
         } else {
             // Interactive: don't post yet, ask user to pick a replacement
             let mut corrected = msg.clone();
+            print_emoji_warnings(&warnings);
             for warning in &warnings {
-                eprintln!(
-                    "\nwarning: unknown emoji shortcode :{}: - did you mean {}? (kept as-is)",
-                    warning.shortcode,
-                    if warning.suggestions.is_empty() {
-                        "no close matches".to_string()
-                    } else {
-                        warning
-                            .suggestions
-                            .iter()
-                            .map(|(sc, em)| format!(":{sc}: {em}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    }
-                );
                 eprintln!("Choose a replacement for :{}:", warning.shortcode);
                 eprintln!("  0) Keep as-is :{}:", warning.shortcode);
                 for (i, (sc, em)) in warning.suggestions.iter().enumerate() {
@@ -264,7 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let response = client
             .post(api_url(&instance, "/api/v1/statuses"))
             .header(AUTHORIZATION, &auth_header)
-            .header(CONTENT_TYPE, "application/json")
+            // `.json(&body)` sets `Content-Type: application/json` itself.
             .json(&body)
             .send()
             .await?;
